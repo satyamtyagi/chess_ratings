@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
+# Counter for expected score calculations
+expected_score_calls = 0
 """
 Dirty Graph Ratings (BT-gradient, dirty-edge, counts-weighted)
 
@@ -17,7 +21,6 @@ CSV format expected: game_no, player_first, player_second, result
 - result: 'w' means player_first won, anything else means player_second won.
 """
 
-from __future__ import annotations
 from typing import Dict, Tuple, List
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -111,6 +114,8 @@ def initialize_graph(players: List[int]) -> Dict[int, Node]:
 
 def compute_expected_score(r1: float, r2: float) -> float:
     """σ(r1 - r2) with clamping for stability."""
+    global expected_score_calls
+    expected_score_calls += 1
     x = max(min(r1 - r2, 30.0), -30.0)
     return 1.0 / (1.0 + math.exp(-x))
 
@@ -257,6 +262,12 @@ def train_with_dirty_edges(
     # Normalize & snapshot Phase 1
     normalize_ratings(nodes)
     phase1_ratings = {p: nodes[p].rating for p in players}
+    
+    # Print Phase 1 results with expected score calculations count
+    if verbose_every:
+        print("\nPhase 1 Ratings:")
+        print(f"Expected score calculations so far: {expected_score_calls}")
+        print_ratings(phase1_ratings, wins)
 
     # -------- Phase 2: clean remaining dirty edges (no neighbor fan-out) --------
     if verbose_every:
@@ -302,6 +313,12 @@ def train_with_dirty_edges(
     # Final normalize & return
     normalize_ratings(nodes)
     final_ratings = {p: nodes[p].rating for p in players}
+    
+    # Print final results with expected score calculations count
+    if verbose_every:
+        print("\nFinal Ratings:")
+        print(f"Total expected score calculations: {expected_score_calls}")
+        print_ratings(final_ratings, wins)
     return phase1_ratings, final_ratings, dict(wins)
 
 
@@ -324,6 +341,9 @@ def save_ratings_to_csv(ratings: Dict[int, float], wins: Dict[int, int], out_pat
 
 
 def main():
+    global expected_score_calls
+    expected_score_calls = 0
+    
     ap = argparse.ArgumentParser(description="Dirty Graph BT-gradient rating calculation for chess-like games.")
     ap.add_argument('-f', '--file', type=str, required=True,
                     help='CSV with columns: game_no, player_first, player_second, result (w/l for player_first)')

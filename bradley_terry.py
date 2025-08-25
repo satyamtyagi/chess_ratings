@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Counter for expected score calculations
+expected_score_calls = 0
 """
 Bradley-Terry Rating Algorithm Implementation
 
@@ -85,6 +87,8 @@ def compute_expected_score(player1_rating, player2_rating):
     Returns:
         float: Expected score (probability of player1 winning)
     """
+    global expected_score_calls
+    expected_score_calls += 1
     return 1.0 / (1.0 + math.exp(player2_rating - player1_rating))
 
 
@@ -238,10 +242,11 @@ def bradley_terry_batch(games, max_iterations=1000, threshold=0.0001, learning_r
         
         new_ratings, error = update_ratings(ratings, actual_scores, expected_scores, learning_rate, normalize)
         
-        print(f"Iteration {iteration+1}: Maximum Error = {error:.6f}")
+        print(f"Iteration {iteration + 1}: Maximum Error = {error:.6f}, Expected score calls so far: {expected_score_calls}")
         
         if error < threshold:
-            print(f"Converged after {iteration+1} iterations!")
+            print(f"Converged after {iteration + 1} iterations!")
+            print(f"Total expected score calculations: {expected_score_calls}")
             return new_ratings, actual_scores, iteration+1, error
         
         ratings = new_ratings
@@ -272,7 +277,10 @@ def display_ratings(ratings, wins):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Bradley-Terry rating calculation for chess games.')
+    global expected_score_calls
+    expected_score_calls = 0
+    
+    parser = argparse.ArgumentParser(description='Run Bradley-Terry algorithm on game data.')
     parser.add_argument('-f', '--file', type=str, default='games.csv',
                         help='CSV file containing game data (default: games.csv)')
     parser.add_argument('-t', '--threshold', type=float, default=0.0001,
