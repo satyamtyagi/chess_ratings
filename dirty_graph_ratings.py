@@ -160,14 +160,12 @@ def compute_edge_contributions(edge, node1, node2, learning_rate=0.1):
     expected1 = compute_expected_score(node1.rating, node2.rating)
     expected2 = compute_expected_score(node2.rating, node1.rating)
     
-    # Calculate actual win ratios
-    total_games = edge.wins1 + edge.wins2
-    actual1 = edge.wins1 / total_games if total_games > 0 else 0
-    actual2 = edge.wins2 / total_games if total_games > 0 else 0
+    # Calculate total games/wins
+    total_wins = edge.wins1 + edge.wins2
     
-    # Calculate contributions for each player
-    contribution1 = learning_rate * (actual1 - expected1)
-    contribution2 = learning_rate * (actual2 - expected2)
+    # Calculate contributions for each player using raw win counts and expected wins
+    contribution1 = learning_rate * (edge.wins1 - total_wins * expected1)
+    contribution2 = learning_rate * (edge.wins2 - total_wins * expected2)
     
     return contribution1, contribution2
 

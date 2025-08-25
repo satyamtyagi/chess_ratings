@@ -26,10 +26,16 @@ def load_ratings_from_csv(file_path):
     
     with open(file_path, 'r') as csvfile:
         reader = csv.DictReader(csvfile)
+        header = reader.fieldnames
+        
+        # Determine column names based on the headers present in the file
+        player_col = 'player_no' if 'player_no' in header else 'player'
+        elo_col = 'elo_rating' if 'elo_rating' in header else 'elo'
+        
         for row in reader:
-            player = int(row['player_no'])
+            player = int(row[player_col])
             bt_rating = float(row['bt_rating'])
-            elo_rating = float(row['elo_rating'])
+            elo_rating = float(row[elo_col])
             
             # Check if wins column exists
             wins = int(float(row['wins'])) if 'wins' in row else 0
