@@ -174,7 +174,9 @@ def compute_edge_contributions(edge, node1, node2, learning_rate=0.1):
 
 def process_games(games, learning_rate=1.0):
     """
-    Process games and compute ratings using dirty graph approach.
+    Process games and compute ratings using dirty graph approach with two phases:
+    1. Process each game individually, updating ratings and marking other edges as dirty
+    2. Clean remaining dirty edges after all games are processed
     
     Args:
         games (list): List of dictionaries containing game data
@@ -189,14 +191,18 @@ def process_games(games, learning_rate=1.0):
     # Initialize graph with nodes for each player
     nodes = initialize_graph(players)
     
-    # Create edges and process games
-    edges = {}  # Dictionary to store all edges
+    # Dictionary to store all edges
+    edges = {}
     
     # Initialize win counts for each player
     win_counts = {player: 0 for player in players}
     
-    # Process all games to build the graph structure
+    # Phase 1: Process each game individually
+    print("\nPhase 1: Processing individual games...")
+    game_count = 0
+    
     for game in games:
+        game_count += 1
         player1 = game['player_first']
         player2 = game['player_second']
         
@@ -214,20 +220,129 @@ def process_games(games, learning_rate=1.0):
         else:
             edge = edges[edge_key]
         
-        # Add game result to edge and update win counts
+        # Update win counts based on game result
         if game['result'] == 'w':
             edge.add_game_result(player1, player2)
             win_counts[player1] += 1
+            winner, loser = player1, player2
         else:  # 'l'
             edge.add_game_result(player2, player1)
             win_counts[player2] += 1
+            winner, loser = player2, player1
+            
+        # First process all dirty edges for both players involved in the game
+        for player in [player1, player2]:
+            player_node = nodes[player]
+            
+            # Process all dirty edges for this player
+            for opponent_id, other_edge in player_node.edges.items():
+                # Check if this edge is dirty for this player
+                is_dirty = (other_edge.player1 == player and other_edge.dirty_for1) or \
+                          (other_edge.player2 == player and other_edge.dirty_for2)
+                
+                if is_dirty:
+                    # Get opponent node
+                    opponent_node = nodes[opponent_id]
+                    
+                    # Store old contributions
+                    if other_edge.player1 == player:
+                        old_contribution = other_edge.contribution1
+                    else:
+                        old_contribution = other_edge.contribution2
+                    
+                    # Calculate new contributions
+                    if other_edge.player1 == player:
+                        node1, node2 = player_node, opponent_node
+                    else:
+                        node1, node2 = opponent_node, player_node
+                    
+                    # Get new contributions
+                    contrib1, contrib2 = compute_edge_contributions(other_edge, node1, node2, learning_rate)
+                    
+                    # Update contributions in the edge
+                    if other_edge.player1 == player:
+                        other_edge.contribution1 = contrib1
+                        new_contribution = contrib1
+                        other_edge.dirty_for1 = False  # Mark clean for this player
+                    else:
+                        other_edge.contribution2 = contrib2
+                        new_contribution = contrib2
+                        other_edge.dirty_for2 = False  # Mark clean for this player
+                    
+                    # Update player's rating
+                    player_node.rating = player_node.rating - old_contribution + new_contribution
+        
+        # Now process the current game
+        winner_node = nodes[winner]
+        loser_node = nodes[loser]
+        
+        # Calculate and store contributions for the specific edge
+        if edge.player1 == winner:
+            old_contrib1 = edge.contribution1
+            old_contrib2 = edge.contribution2
+            contrib1, contrib2 = compute_edge_contributions(edge, winner_node, loser_node, learning_rate)
+            edge.contribution1 = contrib1
+            edge.contribution2 = contrib2
+            
+            # Update ratings
+            winner_node.rating = winner_node.rating - old_contrib1 + contrib1
+            loser_node.rating = loser_node.rating - old_contrib2 + contrib2
+        else:
+            old_contrib1 = edge.contribution1
+            old_contrib2 = edge.contribution2
+            contrib1, contrib2 = compute_edge_contributions(edge, loser_node, winner_node, learning_rate)
+            edge.contribution1 = contrib1
+            edge.contribution2 = contrib2
+            
+            # Update ratings
+            loser_node.rating = loser_node.rating - old_contrib1 + contrib1
+            winner_node.rating = winner_node.rating - old_contrib2 + contrib2
+        
+        # Mark all edges of these two players as dirty (except the one just played)
+        for player, player_node in [(winner, winner_node), (loser, loser_node)]:
+            for opponent_id, other_edge in player_node.edges.items():
+                if opponent_id != winner and opponent_id != loser:  # Skip the edge just played
+                    if other_edge.player1 == player:
+                        other_edge.dirty_for1 = True
+                    else:
+                        other_edge.dirty_for2 = True
+        
+        # For progress update, show ratings every 50 games
+        if game_count % 50 == 0 or game_count == len(games):
+            print(f"Processed {game_count}/{len(games)} games")
     
-    # Initialize list of players with dirty edges
-    players_with_dirty_edges = set(players)  # Start with all players
+    # Normalize and show ratings after Phase 1
+    normalize_ratings(nodes)
+    phase1_ratings = {player: nodes[player].rating for player in players}
+    print("\nPhase 1 Completed - Ratings after game processing:")
+    print_ratings(phase1_ratings, win_counts)
+    
+    # Return Phase 1 ratings for saving to CSV
+    phase1_result = phase1_ratings.copy()
+    
+    # Phase 2: Clean remaining dirty edges
+    print("\nPhase 2: Cleaning remaining dirty edges...")
+    
+    # Count dirty edges for each player
+    dirty_edge_counts = {}
+    for player, node in nodes.items():
+        dirty_edges = 0
+        for opponent_id, edge in node.edges.items():
+            if (edge.player1 == player and edge.dirty_for1) or \
+               (edge.player2 == player and edge.dirty_for2):
+                dirty_edges += 1
+        dirty_edge_counts[player] = dirty_edges
+    
+    # Create set of players with dirty edges
+    players_with_dirty_edges = {player for player, count in dirty_edge_counts.items() if count > 0}
     
     # Process until no more dirty edges
     iteration = 0
-    max_iterations = 100  # Safety to prevent infinite loops
+    max_iterations = 20  # Lower the max iterations since we expect fewer
+    
+    print(f"Starting Phase 2 with {len(players_with_dirty_edges)} players having dirty edges")
+    total_dirty_edges = sum(dirty_edge_counts.values())
+    print(f"Total dirty edges: {total_dirty_edges}")
     
     while players_with_dirty_edges and iteration < max_iterations:
         iteration += 1
@@ -235,12 +350,10 @@ def process_games(games, learning_rate=1.0):
         # Get one player with dirty edges
         player = players_with_dirty_edges.pop()
         node = nodes[player]
+        player_dirty_edges_cleaned = 0
         
-        # Track if player's rating changes
-        old_rating = node.rating
-        
-        # Process all dirty edges for this player
-        rating_change = False
+        # Print progress for each iteration
+        print(f"Phase 2 iteration {iteration} - Processing player {player} with {dirty_edge_counts[player]} dirty edges")
         
         for opponent_id, edge in node.edges.items():
             # Check if edge is dirty for this player
@@ -271,41 +384,95 @@ def process_games(games, learning_rate=1.0):
                     edge.contribution1 = contrib1
                     new_contribution = contrib1
                     edge.dirty_for1 = False  # Mark clean for this player
+                    dirty_edge_counts[player] -= 1
+                    player_dirty_edges_cleaned += 1
                 else:
                     edge.contribution2 = contrib2
                     new_contribution = contrib2
                     edge.dirty_for2 = False  # Mark clean for this player
+                    dirty_edge_counts[player] -= 1
+                    player_dirty_edges_cleaned += 1
                 
-                # Update player's rating
+                # Update player's rating but don't mark other edges as dirty
+                # This is the key change - we don't want to keep creating new dirty edges
                 node.rating = node.rating - old_contribution + new_contribution
-                rating_change = True
-    
-                # If player's rating changed, mark all edges of opponents as dirty
-                if rating_change:
-                    # Add opponents back to the processing queue
-                    players_with_dirty_edges.add(opponent_id)
-                    
-                    # Mark all edges of opponent as dirty (for the opponent)
-                    for opp_opp_id, opp_edge in opponent_node.edges.items():
-                        if opp_edge.player1 == opponent_id:
-                            opp_edge.dirty_for1 = True
-                        else:
-                            opp_edge.dirty_for2 = True
         
-        # If no changes were made to this player's rating, no need to recheck
-        if not rating_change:
-            continue
+        # Add player back to queue if they still have dirty edges
+        if dirty_edge_counts[player] > 0:
+            players_with_dirty_edges.add(player)
+        
+        print(f"  Cleaned {player_dirty_edges_cleaned} edges, {dirty_edge_counts[player]} dirty edges remaining")
+        
+        # Count total remaining dirty edges
+        total_dirty_edges = sum(dirty_edge_counts.values())
+        print(f"  Total remaining dirty edges across all players: {total_dirty_edges}")
+        
+        # If all edges are clean, we're done
+        if total_dirty_edges == 0:
+            break
     
-    # Normalize ratings to have zero mean
+    print(f"Phase 2 completed after {iteration} iterations")
+    
+    # Final normalization of ratings
+    normalize_ratings(nodes)
+    
+    # Return dictionary mapping player IDs to ratings, phase 1 ratings, and dictionary of win counts
+    phase2_ratings = {player: nodes[player].rating for player in players}
+    return phase1_result, phase2_ratings, win_counts
+
+
+def print_ratings(ratings, wins):
+    """
+    Print player ratings in sorted order.
+    
+    Args:
+        ratings (dict): Dictionary mapping player IDs to ratings
+        wins (dict): Dictionary mapping player IDs to win counts
+    """
+    # Convert to ELO scale
+    elo_ratings = {player: convert_to_elo(rating) for player, rating in ratings.items()}
+    
+    # Sort players by rating (descending)
+    sorted_players = sorted(ratings.keys(), key=lambda x: ratings[x], reverse=True)
+    
+    # Calculate statistics
+    bt_ratings = list(ratings.values())
+    mean_rating = sum(bt_ratings) / len(bt_ratings)
+    median_rating = sorted(bt_ratings)[len(bt_ratings) // 2]
+    min_rating = min(bt_ratings)
+    max_rating = max(bt_ratings)
+    std_dev = math.sqrt(sum((r - mean_rating) ** 2 for r in bt_ratings) / len(bt_ratings))
+    
+    # Display sorted players and ratings
+    print("------------------------------------------------------------")
+    print("Rank | Player | BT Rating    | ELO Rating | Wins ")
+    print("------------------------------------------------------------")
+    
+    for rank, player in enumerate(sorted_players, 1):
+        print(f"{rank:4d} | {player:6d} | {ratings[player]:11.6f} | {elo_ratings[player]:9.1f} | {wins[player]:4d}")
+    
+    # Display statistics
+    print("\nRating Statistics:")
+    print(f"Mean Rating: {mean_rating:.6f}")
+    print(f"Median Rating: {median_rating:.6f}")
+    print(f"Min Rating: {min_rating:.6f}")
+    print(f"Max Rating: {max_rating:.6f}")
+    print(f"Standard Deviation: {std_dev:.6f}")
+
+
+
+def normalize_ratings(nodes):
+    """
+    Normalize ratings to have zero mean.
+    
+    Args:
+        nodes (dict): Dictionary of player nodes
+    """
     rating_sum = sum(node.rating for node in nodes.values())
     rating_mean = rating_sum / len(nodes)
     
     for node in nodes.values():
         node.rating -= rating_mean
-    
-    # Return dictionary mapping player IDs to ratings and dictionary of win counts
-    ratings = {player: nodes[player].rating for player in players}
-    return ratings, win_counts
 
 
 def convert_to_elo(bt_rating):
@@ -350,6 +517,10 @@ def main():
                         help='Learning rate for rating updates (default: 1.0)')
     parser.add_argument('-o', '--output-csv', type=str, default='dirty_graph_ratings.csv',
                         help='Output CSV file for ratings (default: dirty_graph_ratings.csv)')
+    parser.add_argument('--ph1-csv', type=str, default='ph1_dirty_graph_ratings.csv',
+                        help='Output CSV file for Phase 1 ratings (default: ph1_dirty_graph_ratings.csv)')
+    parser.add_argument('--ph2-csv', type=str, default='ph2_dirty_graph_ratings.csv',
+                        help='Output CSV file for Phase 2 ratings (default: ph2_dirty_graph_ratings.csv)')
     
     args = parser.parse_args()
     
@@ -360,31 +531,21 @@ def main():
     print(f"\nRunning Dirty Graph Ratings algorithm...")
     print(f"Learning rate: {args.learning_rate}")
     
-    ratings, win_counts = process_games(games, learning_rate=args.learning_rate)
+    # Process games using the two-phase approach
+    phase1_ratings, phase2_ratings, win_counts = process_games(games, learning_rate=args.learning_rate)
     
-    # Save ratings to CSV
-    save_ratings_to_csv(ratings, win_counts, args.output_csv)
+    # Save Phase 1 ratings to CSV
+    save_ratings_to_csv(phase1_ratings, win_counts, args.ph1_csv)
     
-    # Print final ratings
-    print("\nFinal Ratings:")
-    print("-" * 60)
-    print(f"{'Rank':4} | {'Player':6} | {'BT Rating':12} | {'ELO Rating':10} | {'Wins':5}")
-    print("-" * 60)
+    # Save Phase 2 ratings to CSV
+    save_ratings_to_csv(phase2_ratings, win_counts, args.ph2_csv)
     
-    sorted_ratings = sorted(ratings.items(), key=lambda x: x[1], reverse=True)
-    for rank, (player, bt_rating) in enumerate(sorted_ratings, 1):
-        elo_rating = convert_to_elo(bt_rating)
-        wins = win_counts[player]
-        print(f"{rank:4} | {player:6} | {bt_rating:12.6f} | {elo_rating:10.1f} | {wins:5d}")
+    # For backwards compatibility, also save the final ratings to the original output file
+    save_ratings_to_csv(phase2_ratings, win_counts, args.output_csv)
     
-    # Print rating statistics
-    bt_values = list(ratings.values())
-    print("\nRating Statistics:")
-    print(f"Mean Rating: {np.mean(bt_values):.6f}")
-    print(f"Median Rating: {np.median(bt_values):.6f}")
-    print(f"Min Rating: {min(bt_values):.6f}")
-    print(f"Max Rating: {max(bt_values):.6f}")
-    print(f"Standard Deviation: {np.std(bt_values):.6f}")
+    # Print final ratings (now handled by print_ratings in process_games)
+    print("\nFinal Ratings (after both phases):")
+    print_ratings(phase2_ratings, win_counts)
 
 
 if __name__ == '__main__':
