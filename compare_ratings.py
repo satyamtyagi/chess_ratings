@@ -20,7 +20,7 @@ def load_ratings_from_csv(file_path):
         file_path (str): Path to CSV file containing ratings
         
     Returns:
-        dict: Dictionary mapping player IDs to their ratings
+        dict: Dictionary mapping player IDs to their ratings and win counts if available
     """
     ratings = {}
     
@@ -30,7 +30,11 @@ def load_ratings_from_csv(file_path):
             player = int(row['player_no'])
             bt_rating = float(row['bt_rating'])
             elo_rating = float(row['elo_rating'])
-            ratings[player] = (bt_rating, elo_rating)
+            
+            # Check if wins column exists
+            wins = int(float(row['wins'])) if 'wins' in row else 0
+            
+            ratings[player] = (bt_rating, elo_rating, wins)
     
     return ratings
 
@@ -104,9 +108,9 @@ def main():
     
     # Print player-by-player comparison
     print("\nPlayer-by-Player Comparison:")
-    print("-" * 70)
-    print(f"{'Player':6} | {'BT 1':10} | {'BT 2':10} | {'BT Diff':10} | {'ELO 1':10} | {'ELO 2':10} | {'ELO Diff':10}")
-    print("-" * 70)
+    print("-" * 80)
+    print(f"{'Player':6} | {'BT 1':10} | {'BT 2':10} | {'BT Diff':10} | {'ELO 1':10} | {'ELO 2':10} | {'ELO Diff':10} | {'Wins':5}")
+    print("-" * 80)
     
     # Sort players by player ID (1 to 10)
     sorted_players = sorted(players)
@@ -120,7 +124,10 @@ def main():
         elo2 = ratings2[player][1]
         elo_diff = elo1 - elo2
         
-        print(f"{player:6} | {bt1:10.6f} | {bt2:10.6f} | {bt_diff:10.6f} | {elo1:10.1f} | {elo2:10.1f} | {elo_diff:10.1f}")
+        # Get win count from the first file
+        wins = ratings1[player][2]
+        
+        print(f"{player:6} | {bt1:10.6f} | {bt2:10.6f} | {bt_diff:10.6f} | {elo1:10.1f} | {elo2:10.1f} | {elo_diff:10.1f} | {wins:5d}")
     
     # Print summary statistics
     print("\nSummary Statistics:")

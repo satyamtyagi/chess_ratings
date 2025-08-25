@@ -189,24 +189,26 @@ def convert_to_elo(bt_rating, elo_anchor=1200, bt_anchor=0):
     return elo_anchor + (400 / math.log(10)) * (bt_rating - bt_anchor)
 
 
-def save_ratings_to_csv(ratings, output_file='ratings.csv'):
+def save_ratings_to_csv(ratings, wins, output_file='ratings.csv'):
     """
-    Save player ratings to a CSV file.
+    Save player ratings and win counts to a CSV file.
     
     Args:
         ratings (dict): Dictionary mapping player IDs to their Bradley-Terry ratings
+        wins (dict): Dictionary mapping player IDs to their win counts
         output_file (str): Name of the output CSV file
     """
     with open(output_file, 'w', newline='') as csvfile:
         writer = csv.writer(csvfile)
         
         # Write header
-        writer.writerow(['player_no', 'bt_rating', 'elo_rating'])
+        writer.writerow(['player_no', 'bt_rating', 'elo_rating', 'wins'])
         
-        # Write ratings for each player
+        # Write ratings and wins for each player
         for player, bt_rating in sorted(ratings.items()):
             elo_rating = convert_to_elo(bt_rating)
-            writer.writerow([player, f"{bt_rating:.6f}", f"{elo_rating:.1f}"])
+            win_count = wins.get(player, 0)
+            writer.writerow([player, f"{bt_rating:.6f}", f"{elo_rating:.1f}", win_count])
             
     print(f"Successfully saved ratings to {output_file}")
 
@@ -223,6 +225,7 @@ def bradley_terry_batch(games, max_iterations=1000, threshold=0.0001, learning_r
         
     Returns:
         dict: Dictionary mapping player IDs to their final ratings
+        dict: Dictionary mapping player IDs to their win counts
         int: Number of iterations performed
         float: Final error
     """
@@ -239,31 +242,33 @@ def bradley_terry_batch(games, max_iterations=1000, threshold=0.0001, learning_r
         
         if error < threshold:
             print(f"Converged after {iteration+1} iterations!")
-            return new_ratings, iteration+1, error
+            return new_ratings, actual_scores, iteration+1, error
         
         ratings = new_ratings
     
     print(f"Did not converge after {max_iterations} iterations. Final error: {error:.6f}")
-    return ratings, max_iterations, error
+    return ratings, actual_scores, max_iterations, error
 
 
-def display_ratings(ratings):
+def display_ratings(ratings, wins):
     """
-    Display player ratings in descending order.
+    Display player ratings and win counts in descending order by rating.
     
     Args:
-        ratings (dict): Dictionary mapping player IDs to their ratings
+        ratings (dict): Dictionary mapping player IDs to their Bradley-Terry ratings
+        wins (dict): Dictionary mapping player IDs to their win counts
     """
     sorted_ratings = sorted(ratings.items(), key=lambda x: x[1], reverse=True)
     
     print("\nFinal Ratings:")
-    print("-" * 50)
-    print(f"{'Rank':4} | {'Player':6} | {'BT Rating':12} | {'ELO Rating':10}")
-    print("-" * 50)
+    print("-" * 60)
+    print(f"{'Rank':4} | {'Player':6} | {'BT Rating':12} | {'ELO Rating':10} | {'Wins':5}")
+    print("-" * 60)
     
     for rank, (player, bt_rating) in enumerate(sorted_ratings, 1):
         elo_rating = convert_to_elo(bt_rating)
-        print(f"{rank:4} | {player:6} | {bt_rating:12.6f} | {elo_rating:10.1f}")
+        win_count = wins.get(player, 0)
+        print(f"{rank:4} | {player:6} | {bt_rating:12.6f} | {elo_rating:10.1f} | {win_count:5.0f}")
 
 
 def main():
@@ -291,7 +296,7 @@ def main():
     print(f"Max iterations: {args.iterations}, Threshold: {args.threshold}, Learning rate: {args.learning_rate}")
     print(f"Normalization: {not args.no_normalize}")
     
-    ratings, iterations, error = bradley_terry_batch(
+    ratings, wins, iterations, error = bradley_terry_batch(
         games, 
         max_iterations=args.iterations,
         threshold=args.threshold,
@@ -300,9 +305,9 @@ def main():
     )
     
     # Save ratings to CSV
-    save_ratings_to_csv(ratings, args.output_csv)
+    save_ratings_to_csv(ratings, wins, args.output_csv)
     
-    display_ratings(ratings)
+    display_ratings(ratings, wins)
     
     # Calculate and display some statistics
     rating_values = list(ratings.values())

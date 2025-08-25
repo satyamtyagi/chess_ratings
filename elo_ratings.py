@@ -156,44 +156,48 @@ def update_elo_ratings(ratings, games, k_factor=32):
 
 
 
-def display_elo_ratings(elo_ratings):
+def display_elo_ratings(elo_ratings, wins):
     """
-    Display player ELO ratings in descending order with their equivalent BT ratings.
+    Display player ELO ratings in descending order with their equivalent BT ratings and win counts.
     
     Args:
         elo_ratings (dict): Dictionary mapping player IDs to their ELO ratings
+        wins (dict): Dictionary mapping player IDs to their win counts
     """
     sorted_ratings = sorted(elo_ratings.items(), key=lambda x: x[1], reverse=True)
     
     print("\nFinal ELO Ratings:")
-    print("-" * 50)
-    print(f"{'Rank':4} | {'Player':6} | {'ELO Rating':10} | {'BT Rating':12}")
-    print("-" * 50)
+    print("-" * 60)
+    print(f"{'Rank':4} | {'Player':6} | {'ELO Rating':10} | {'BT Rating':12} | {'Wins':5}")
+    print("-" * 60)
     
     for rank, (player, elo) in enumerate(sorted_ratings, 1):
         bt = elo_to_bradley_terry(elo)
-        print(f"{rank:4} | {player:6} | {elo:10.1f} | {bt:12.6f}")
+        win_count = wins.get(player, 0)
+        print(f"{rank:4} | {player:6} | {elo:10.1f} | {bt:12.6f} | {win_count:5.0f}")
 
 
-def save_ratings_to_csv(elo_ratings, output_file='elo_ratings.csv'):
+def save_ratings_to_csv(elo_ratings, wins, output_file='elo_ratings.csv'):
     """
-    Save player ELO ratings to a CSV file, along with equivalent BT ratings.
-    Matching the format of ratings.csv: player_no, bt_rating, elo_rating.
+    Save player ELO ratings to a CSV file, along with equivalent BT ratings and win counts.
+    Matching the format of ratings.csv: player_no, bt_rating, elo_rating, wins.
     
     Args:
         elo_ratings (dict): Dictionary mapping player IDs to their ELO ratings
+        wins (dict): Dictionary mapping player IDs to their win counts
         output_file (str): Name of the output CSV file
     """
     with open(output_file, 'w', newline='') as csvfile:
         writer = csv.writer(csvfile)
         
-        # Write header to match ratings.csv format
-        writer.writerow(['player_no', 'bt_rating', 'elo_rating'])
+        # Write header to match ratings.csv format plus wins
+        writer.writerow(['player_no', 'bt_rating', 'elo_rating', 'wins'])
         
         # Write ratings for each player
         for player, elo in sorted(elo_ratings.items()):
             bt = elo_to_bradley_terry(elo)
-            writer.writerow([player, f"{bt:.6f}", f"{elo:.1f}"])
+            win_count = wins.get(player, 0)
+            writer.writerow([player, f"{bt:.6f}", f"{elo:.1f}", win_count])
             
     print(f"Successfully saved ELO ratings to {output_file}")
 
@@ -207,15 +211,29 @@ def calculate_elo_ratings(games, k_factor=32):
         k_factor (int): Maximum rating change per game
         
     Returns:
-        dict: Dictionary mapping player IDs to their final ELO ratings
+        tuple: (ratings_dict, wins_dict) - Dictionary of final ELO ratings and dictionary of win counts
     """
     players = get_player_list(games)
     ratings = initialize_ratings(players)
     
+    # Initialize win counts
+    wins = {player: 0 for player in players}
+    
+    # Count wins for each player
+    for game in games:
+        player1 = game['player_first']
+        player2 = game['player_second']
+        result = game['result']
+        
+        if result == 'w':  # player1 wins
+            wins[player1] += 1
+        else:  # player2 wins
+            wins[player2] += 1
+    
     # Process all games once
     ratings, _ = update_elo_ratings(ratings, games, k_factor)
     
-    return ratings
+    return ratings, wins
 
 
 
@@ -240,13 +258,13 @@ def main():
     print(f"K-factor: {args.k_factor}")
     
     # Calculate ELO ratings
-    elo_ratings = calculate_elo_ratings(games, k_factor=args.k_factor)
+    elo_ratings, wins = calculate_elo_ratings(games, k_factor=args.k_factor)
     
     # Save ELO ratings to CSV
-    save_ratings_to_csv(elo_ratings, args.output_csv)
+    save_ratings_to_csv(elo_ratings, wins, args.output_csv)
     
     # Display ratings
-    display_elo_ratings(elo_ratings)
+    display_elo_ratings(elo_ratings, wins)
     
     # Calculate and display some statistics
     rating_values = list(elo_ratings.values())
