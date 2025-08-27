@@ -164,19 +164,28 @@ def convert_to_elo(bt_rating: float, anchor_bt: float = 0.0, anchor_elo: float =
 
 
 def print_ratings(ratings: Dict[int, float], wins: Dict[int, int]) -> None:
+    # Calculate ELO ratings
     elo = {p: convert_to_elo(r) for p, r in ratings.items()}
-    sorted_players = sorted(ratings, key=lambda x: ratings[x], reverse=True)
-    print("Player |  BT (θ)    |  ELO    | Wins")
-    print("-------------------------------------")
+    
+    # First calculate true rankings by rating (highest to lowest)
+    sorted_by_rating = sorted(ratings.items(), key=lambda x: x[1], reverse=True)
+    ranking_map = {player: rank for rank, (player, _) in enumerate(sorted_by_rating, 1)}
+    
+    # Now sort by player number for display
+    sorted_players = sorted(ratings, key=lambda x: x)  # Sort by player number
+    
+    print("Rank | Player |  BT (θ)    |  ELO    | Wins")
+    print("-------------------------------------------")
     for p in sorted_players:
-        print(f"{p:6d} | {ratings[p]:9.4f} | {elo[p]:7.1f} | {wins.get(p,0):4d}")
+        true_rank = ranking_map[p]
+        print(f"{true_rank:4d} | {p:6d} | {ratings[p]:9.4f} | {elo[p]:7.1f} | {wins.get(p,0):4d}")
 
 
 # -------------------- Core algorithm --------------------
 
 def train_with_dirty_edges(
     games: List[dict],
-    learning_rate: float = 0.2,
+    learning_rate: float = 0.01,
     phase2_max_iters: int = 5,
     verbose_every: int = 0
 ) -> Tuple[Dict[int, float], Dict[int, float], Dict[int, int]]:
@@ -264,14 +273,14 @@ def train_with_dirty_edges(
     phase1_ratings = {p: nodes[p].rating for p in players}
     
     # Print Phase 1 results with expected score calculations count
-    if verbose_every:
-        print("\nPhase 1 Ratings:")
-        print(f"Expected score calculations so far: {expected_score_calls}")
-        print_ratings(phase1_ratings, wins)
+    #if verbose_every:
+    print("\nPhase 1 Ratings:")
+    print(f"Expected score calculations so far: {expected_score_calls}")
+    print_ratings(phase1_ratings, wins)
 
     # -------- Phase 2: clean remaining dirty edges (no neighbor fan-out) --------
-    if verbose_every:
-        print("\nPhase 2: Cleaning remaining dirty edges...")
+    #if verbose_every:
+    print("\nPhase 2: Cleaning remaining dirty edges...")
 
     # Count dirty ends per player
     dirty_counts: Dict[int, int] = {}
@@ -315,10 +324,10 @@ def train_with_dirty_edges(
     final_ratings = {p: nodes[p].rating for p in players}
     
     # Print final results with expected score calculations count
-    if verbose_every:
-        print("\nFinal Ratings:")
-        print(f"Total expected score calculations: {expected_score_calls}")
-        print_ratings(final_ratings, wins)
+    #if verbose_every:
+    print("\nFinal Ratings:")
+    print(f"Total expected score calculations: {expected_score_calls}")
+    print_ratings(final_ratings, wins)
     return phase1_ratings, final_ratings, dict(wins)
 
 
@@ -333,7 +342,7 @@ def save_ratings_to_csv(ratings: Dict[int, float], wins: Dict[int, int], out_pat
             'elo': convert_to_elo(r),
             'wins': wins.get(p, 0),
         })
-    rows.sort(key=lambda x: x['bt_rating'], reverse=True)
+    rows.sort(key=lambda x: x['player'])  # Sort by player number
     with open(out_path, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=['player','bt_rating','elo','wins'])
         w.writeheader()
@@ -347,8 +356,8 @@ def main():
     ap = argparse.ArgumentParser(description="Dirty Graph BT-gradient rating calculation for chess-like games.")
     ap.add_argument('-f', '--file', type=str, required=True,
                     help='CSV with columns: game_no, player_first, player_second, result (w/l for player_first)')
-    ap.add_argument('-l', '--learning-rate', type=float, default=0.2,
-                    help='Learning rate η for rating updates (default: 0.2)')
+    ap.add_argument('-l', '--learning-rate', type=float, default=0.01,
+                    help='Learning rate η for rating updates (default: 0.01)')
     ap.add_argument('-o', '--output-csv', type=str, default='dirty_graph_ratings.csv',
                     help='Output CSV for ratings (default: dirty_graph_ratings.csv)')
     ap.add_argument('--phase2-iters', type=int, default=5, help='Max iterations for Phase 2 cleaning (default: 5)')
@@ -369,7 +378,7 @@ def main():
     print_ratings(phase1_r, wins)
     print("\nFinal Ratings:")
     print_ratings(final_r, wins)
-
+    print(f"Total expected score calculations: {expected_score_calls}")
 
 if __name__ == '__main__':
     main()

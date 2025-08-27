@@ -142,7 +142,7 @@ def compute_actual_scores(games):
     return actual_scores
 
 
-def update_ratings(ratings, actual_scores, expected_scores, learning_rate=1.0, normalize=True):
+def update_ratings(ratings, actual_scores, expected_scores, learning_rate=0.01, normalize=True):
     """
     Update ratings based on actual and expected scores.
     
@@ -209,7 +209,7 @@ def save_ratings_to_csv(ratings, wins, output_file='ratings.csv'):
         writer.writerow(['player_no', 'bt_rating', 'elo_rating', 'wins'])
         
         # Write ratings and wins for each player
-        for player, bt_rating in sorted(ratings.items()):
+        for player, bt_rating in sorted(ratings.items(), key=lambda x: x[0]):
             elo_rating = convert_to_elo(bt_rating)
             win_count = wins.get(player, 0)
             writer.writerow([player, f"{bt_rating:.6f}", f"{elo_rating:.1f}", win_count])
@@ -217,7 +217,7 @@ def save_ratings_to_csv(ratings, wins, output_file='ratings.csv'):
     print(f"Successfully saved ratings to {output_file}")
 
 
-def bradley_terry_batch(games, max_iterations=1000, threshold=0.0001, learning_rate=1.0, normalize=True):
+def bradley_terry_batch(games, max_iterations=1000, threshold=0.0001, learning_rate=0.01, normalize=True):
     """
     Run Bradley-Terry rating algorithm on a batch of games.
     
@@ -257,23 +257,30 @@ def bradley_terry_batch(games, max_iterations=1000, threshold=0.0001, learning_r
 
 def display_ratings(ratings, wins):
     """
-    Display player ratings and win counts in descending order by rating.
+    Display player ratings and win counts in order by player number,
+    but showing true rankings based on rating value.
     
     Args:
         ratings (dict): Dictionary mapping player IDs to their Bradley-Terry ratings
         wins (dict): Dictionary mapping player IDs to their win counts
     """
-    sorted_ratings = sorted(ratings.items(), key=lambda x: x[1], reverse=True)
+    # First calculate true rankings by rating (highest to lowest)
+    sorted_by_rating = sorted(ratings.items(), key=lambda x: x[1], reverse=True)
+    ranking_map = {player: rank for rank, (player, _) in enumerate(sorted_by_rating, 1)}
+    
+    # Now sort by player number for display
+    sorted_by_player = sorted(ratings.items(), key=lambda x: x[0])
     
     print("\nFinal Ratings:")
     print("-" * 60)
     print(f"{'Rank':4} | {'Player':6} | {'BT Rating':12} | {'ELO Rating':10} | {'Wins':5}")
     print("-" * 60)
     
-    for rank, (player, bt_rating) in enumerate(sorted_ratings, 1):
+    for player, bt_rating in sorted_by_player:
+        true_rank = ranking_map[player]
         elo_rating = convert_to_elo(bt_rating)
         win_count = wins.get(player, 0)
-        print(f"{rank:4} | {player:6} | {bt_rating:12.6f} | {elo_rating:10.1f} | {win_count:5.0f}")
+        print(f"{true_rank:4} | {player:6} | {bt_rating:12.6f} | {elo_rating:10.1f} | {win_count:5.0f}")
 
 
 def main():
@@ -287,8 +294,8 @@ def main():
                         help='Convergence threshold (default: 0.0001)')
     parser.add_argument('-i', '--iterations', type=int, default=1000,
                         help='Maximum number of iterations (default: 1000)')
-    parser.add_argument('-l', '--learning-rate', type=float, default=0.1,
-                        help='Learning rate for rating updates (default: 0.1)')
+    parser.add_argument('-l', '--learning-rate', type=float, default=0.01,
+                        help='Learning rate for rating updates (default: 0.01)')
     parser.add_argument('-n', '--no-normalize', action='store_true',
                         help='Disable normalization of ratings after each iteration')
     parser.add_argument('-o', '--output-csv', type=str, default='ratings.csv',
