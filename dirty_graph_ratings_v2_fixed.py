@@ -324,7 +324,7 @@ def train_with_dirty_edges(
     final_ratings = {p: nodes[p].rating for p in players}
     
     # Print final results with expected score calculations count
-    #if verbose_every:
+    # if verbose_every:
     print("\nFinal Ratings:")
     print(f"Total expected score calculations: {expected_score_calls}")
     print_ratings(final_ratings, wins)
@@ -374,10 +374,10 @@ def main():
     )
     save_ratings_to_csv(final_r, wins, args.output_csv)
 
-    print("\nPhase 1 Ratings:")
-    print_ratings(phase1_r, wins)
-    print("\nFinal Ratings:")
-    print_ratings(final_r, wins)
+    # print("\nPhase 1 Ratings:")
+    # print_ratings(phase1_r, wins)
+    # print("\nFinal Ratings:")
+    # print_ratings(final_r, wins)
     print(f"Total expected score calculations: {expected_score_calls}")
 
 if __name__ == '__main__':
