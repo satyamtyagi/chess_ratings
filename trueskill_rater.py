@@ -196,6 +196,25 @@ def convert_to_elo(bt_rating, elo_anchor=1200, bt_anchor=0):
     """
     # Formula: ELO = elo_anchor + (400/ln(10)) * (BT_rating - bt_anchor)
     return elo_anchor + (400 / math.log(10)) * (bt_rating - bt_anchor)
+    
+    
+def convert_trueskill_to_elo(mu, beta=25.0/6.0, k_factor=196.1, mu_anchor=25.0, elo_anchor=1200):
+    """
+    Convert TrueSkill μ directly to ELO scale using the standard TrueSkill conversion.
+    
+    Args:
+        mu (float): TrueSkill μ value
+        beta (float): TrueSkill β parameter (default: 25/6)
+        k_factor (float): Conversion factor, either 196.1 or 208.8 (default: 196.1)
+        mu_anchor (float): TrueSkill μ anchor value (default: 25.0)
+        elo_anchor (int): ELO rating anchor point (default: 1200)
+        
+    Returns:
+        float: Corresponding ELO rating
+    """
+    # Formula: ELO = elo_anchor + k * (μ - mu_anchor), where k = k_factor / beta
+    k = k_factor / beta  # Either ~47.1 or ~50.2 with default beta
+    return elo_anchor + k * (mu - mu_anchor)
 
 # --------- CSV I/O and CLI ---------
 
@@ -227,8 +246,10 @@ def main():
     ap.add_argument("--tau", type=float, default=0.0, help="Skill drift per game (default 0.0).")
     ap.add_argument("--kcon", type=float, default=3.0, help="Conservative k for mu - k*sigma (default 3).")
     ap.add_argument("--show-elo", action="store_true", help="Also show approximate Elo.")
-    ap.add_argument("--elo-anchor", type=float, default=1500.0, help="Elo value corresponding to mu_anchor.")
+    ap.add_argument("--elo-anchor", type=float, default=1200.0, help="Elo value corresponding to mu_anchor.")
     ap.add_argument("--mu-anchor", type=float, default=25.0, help="Mu value anchoring the Elo mapping (default 25).")
+    ap.add_argument("--direct-elo", action="store_true", help="Use direct TrueSkill to ELO formula: Elo≈1200+k(μ−25), where k is 196.1/beta.")
+    ap.add_argument("--k-factor", type=float, default=196.1, help="k-factor for direct ELO conversion (196.1 or 208.8).")
     ap.add_argument("--out", type=str, default="", help="Optional path to write ratings CSV.")
     args = ap.parse_args()
 
@@ -254,9 +275,35 @@ def main():
         cons = ts.displayed(pid, k=args.kcon)
         
         if args.show_elo:
-            # Convert normalized ratings to ELO using BT formula
-            elo_mu = convert_to_elo(normalized_mu[pid], elo_anchor=args.elo_anchor)
-            elo_cons = convert_to_elo(normalized_cons[pid], elo_anchor=args.elo_anchor)
+            # Original method: Normalize to BT range then convert to ELO
+            bt_elo_mu = convert_to_elo(normalized_mu[pid], elo_anchor=args.elo_anchor)
+            bt_elo_cons = convert_to_elo(normalized_cons[pid], elo_anchor=args.elo_anchor)
+            
+            # Direct TrueSkill to ELO conversion method
+            direct_elo_mu = convert_trueskill_to_elo(
+                mu=mu, 
+                beta=args.beta, 
+                k_factor=args.k_factor, 
+                mu_anchor=args.mu_anchor, 
+                elo_anchor=args.elo_anchor
+            )
+            
+            # Also convert conservative rating directly
+            direct_elo_cons = convert_trueskill_to_elo(
+                mu=cons, 
+                beta=args.beta, 
+                k_factor=args.k_factor, 
+                mu_anchor=args.mu_anchor, 
+                elo_anchor=args.elo_anchor
+            )
+            
+            # Choose which method to use for output based on args.direct_elo flag
+            if hasattr(args, 'direct_elo') and args.direct_elo:
+                elo_mu = direct_elo_mu
+                elo_cons = direct_elo_cons
+            else:
+                elo_mu = bt_elo_mu
+                elo_cons = bt_elo_cons
         else:
             elo_mu = ""
             elo_cons = ""
