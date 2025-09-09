@@ -86,31 +86,20 @@ def main():
     print(f"Loading ratings from {args.file2}...")
     ratings2 = load_ratings_from_csv(args.file2)
     
-    # Calculate MSE for BT ratings (column index 0)
-    bt_mse, bt_rmse = compute_mse(ratings1, ratings2, 0)
-    print(f"\nBradley-Terry Rating Comparison:")
-    print(f"Mean Square Error: {bt_mse:.6f}")
-    print(f"Root Mean Square Error: {bt_rmse:.6f}")
-    
-    # Calculate MSE for ELO ratings (column index 1)
-    elo_mse, elo_rmse = compute_mse(ratings1, ratings2, 1)
-    print(f"\nELO Rating Comparison:")
-    print(f"Mean Square Error: {elo_mse:.6f}")
-    print(f"Root Mean Square Error: {elo_rmse:.6f}")
-    
-    # Calculate correlations
+    # Calculate MSE and correlations, but don't print yet
     players = list(ratings1.keys())
+    
+    # BT ratings comparisons
+    bt_mse, bt_rmse = compute_mse(ratings1, ratings2, 0)
     bt_values1 = [ratings1[p][0] for p in players]  # BT ratings from file 1
     bt_values2 = [ratings2[p][0] for p in players]  # BT ratings from file 2
+    bt_correlation = np.corrcoef(bt_values1, bt_values2)[0, 1]
+    
+    # ELO ratings comparisons
+    elo_mse, elo_rmse = compute_mse(ratings1, ratings2, 1)
     elo_values1 = [ratings1[p][1] for p in players]  # ELO ratings from file 1
     elo_values2 = [ratings2[p][1] for p in players]  # ELO ratings from file 2
-    
-    bt_correlation = np.corrcoef(bt_values1, bt_values2)[0, 1]
     elo_correlation = np.corrcoef(elo_values1, elo_values2)[0, 1]
-    
-    print(f"\nCorrelations:")
-    print(f"Bradley-Terry correlation: {bt_correlation:.6f}")
-    print(f"ELO correlation: {elo_correlation:.6f}")
     
     # Print player-by-player comparison
     print("\nPlayer-by-Player Comparison:")
@@ -139,6 +128,15 @@ def main():
     print("\nSummary Statistics:")
     print(f"Average absolute BT difference: {np.mean([abs(ratings1[p][0] - ratings2[p][0]) for p in players]):.6f}")
     print(f"Average absolute ELO difference: {np.mean([abs(ratings1[p][1] - ratings2[p][1]) for p in players]):.1f}")
+    
+    # Now print RMSE and correlation metrics
+    print(f"\nRMSE Metrics:")
+    print(f"Bradley-Terry RMSE: {bt_rmse:.6f}")
+    print(f"ELO RMSE: {elo_rmse:.6f}")
+    
+    print(f"\nCorrelations:")
+    print(f"Bradley-Terry correlation: {bt_correlation:.6f}")
+    print(f"ELO correlation: {elo_correlation:.6f}")
 
 
 if __name__ == '__main__':
