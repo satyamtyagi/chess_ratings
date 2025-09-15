@@ -25,6 +25,8 @@ from typing import Dict, Tuple, List
 from collections import defaultdict
 from dataclasses import dataclass, field
 import math
+MIN_HESS: float = 1e-12
+THETA_CLIP: float = 40.0
 import csv
 import argparse
 
@@ -131,6 +133,39 @@ def compute_edge_expected(edge: Edge, node1: Node, node2: Node) -> Tuple[float, 
     return E1, E2
 
 
+
+def compute_node_hessian(node: Node, nodes: Dict[int, Node]) -> float:
+    """Sum over incident edges: n_ij * p_ij * (1 - p_ij) under current ratings."""
+    h = 0.0
+    for opp_id, edge in node.edges.items():
+        n = edge.total_games()
+        if n <= 0:
+            continue
+        opp = nodes[opp_id]
+        p = compute_expected_score(node.rating, opp.rating)
+        h += n * p * (1.0 - p)
+    return h
+
+
+def recenter_and_clip(nodes):
+    """Zero-mean gauge and clip ratings to [-THETA_CLIP, THETA_CLIP] for numeric safety."""
+    if not nodes:
+        return
+    try:
+        it = nodes.values()
+    except AttributeError:
+        it = nodes  # if it's already a list
+    vals = [n.rating for n in it]
+    if not vals:
+        return
+    mu = sum(vals) / len(vals)
+    # apply
+    for n in nodes.values() if isinstance(nodes, dict) else nodes:
+        n.rating -= mu
+        if n.rating > THETA_CLIP:
+            n.rating = THETA_CLIP
+        elif n.rating < -THETA_CLIP:
+            n.rating = -THETA_CLIP
 def refresh_edge_expected(edge: Edge, node1: Node, node2: Node) -> None:
     """
     Keep node.expected equal to the sum of its edges' expected counts.
@@ -184,9 +219,7 @@ def print_ratings(ratings: Dict[int, float], wins: Dict[int, int]) -> None:
 # -------------------- Core algorithm --------------------
 
 def train_with_dirty_edges(
-    games: List[dict],
-    learning_rate: float = 0.01,
-    phase2_max_iters: int = 5,
+    games: List[dict], phase2_max_iters: int = 5,
     verbose_every: int = 0
 ) -> Tuple[Dict[int, float], Dict[int, float], Dict[int, int]]:
     """
@@ -245,14 +278,24 @@ def train_with_dirty_edges(
                     edge.dirty_for2 = False
             # ONE gradient step per node after cleaning its incident dirty edges
             g_node = node.actual - node.expected
-            node.rating += learning_rate * g_node
+            h_node = compute_node_hessian(node, nodes)
+        h_node = max(h_node, MIN_HESS)
+        h_node = max(h_node, MIN_HESS)
+        node.rating += (g_node / h_node)
 
         # Refresh the current game edge based on the updated ratings, then step winner & loser once
         refresh_edge_expected(e, nodes[e.player1], nodes[e.player2])
         gw = nodes[winner].actual - nodes[winner].expected
         gl = nodes[loser].actual  - nodes[loser].expected
-        nodes[winner].rating += learning_rate * gw
-        nodes[loser].rating  += learning_rate * gl
+        hw = compute_node_hessian(nodes[winner], nodes)
+        hl = compute_node_hessian(nodes[loser], nodes)
+        hw = max(hw, MIN_HESS)
+        hl = max(hl, MIN_HESS)
+        hw = max(hw, MIN_HESS)
+        nodes[winner].rating += (gw / hw)
+        hl = max(hl, MIN_HESS)
+        nodes[loser].rating  += (gl / hl)
+        recenter_and_clip(nodes)
 
         # Mark all OTHER edges of winner and loser dirty on their own ends
         for player in (winner, loser):
@@ -314,7 +357,10 @@ def train_with_dirty_edges(
 
         # ONE gradient step after cleaning
         g_node = node.actual - node.expected
-        node.rating += learning_rate * g_node
+        h_node = compute_node_hessian(node, nodes)
+        h_node = max(h_node, MIN_HESS)
+        h_node = max(h_node, MIN_HESS)
+        node.rating += (g_node / h_node)
 
         if dirty_counts[p] > 0:
             players_with_dirty.add(p)
@@ -356,8 +402,8 @@ def main():
     ap = argparse.ArgumentParser(description="Dirty Graph BT-gradient rating calculation for chess-like games.")
     ap.add_argument('-f', '--file', type=str, required=True,
                     help='CSV with columns: game_no, player_first, player_second, result (w/l for player_first)')
-    ap.add_argument('-l', '--learning-rate', type=float, default=None,
-                    help='Learning rate η for rating updates (default: players/games)')
+    ap.add_argument('-l', '--learning-rate', type=float, default=0.01,
+                    help='Learning rate η for rating updates (default: 0.01)')
     ap.add_argument('-o', '--output-csv', type=str, default='dirty_graph_ratings.csv',
                     help='Output CSV for ratings (default: dirty_graph_ratings.csv)')
     ap.add_argument('--phase2-iters', type=int, default=5, help='Max iterations for Phase 2 cleaning (default: 5)')
@@ -366,18 +412,8 @@ def main():
     args = ap.parse_args()
 
     games = load_games_from_csv(args.file)
-    
-    # Calculate adaptive learning rate if not explicitly provided
-    learning_rate = args.learning_rate
-    if learning_rate is None:
-        players = len(get_player_list(games))
-        game_count = len(games)
-        learning_rate = players / game_count
-        print(f"Using adaptive learning rate: {learning_rate:.6f} (players/games = {players}/{game_count})")
-    
     phase1_r, final_r, wins = train_with_dirty_edges(
-        games,
-        learning_rate=learning_rate,
+        games, 
         phase2_max_iters=args.phase2_iters,
         verbose_every=args.verbose_every
     )
@@ -391,3 +427,19 @@ def main():
 
 if __name__ == '__main__':
     main()
+def compute_expected_score(r1: float, r2: float) -> float:
+    """Stable logistic sigma(r1 - r2) with numerical clamps to avoid 0/1."""
+    x = r1 - r2
+    if x >= 0:
+        z = math.exp(-x)
+        p = 1.0 / (1.0 + z)
+    else:
+        z = math.exp(x)
+        p = z / (1.0 + z)
+    if p <= 1e-12:
+        return 1e-12
+    if p >= 1.0 - 1e-12:
+        return 1.0 - 1e-12
+    return p
+
+
