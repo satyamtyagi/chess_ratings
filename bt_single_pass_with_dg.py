@@ -276,19 +276,32 @@ def refresh_edge_expected(edge: Edge, node1: Node, node2: Node) -> None:
     node1.expected += E1
     node2.expected += E2
 
-def process_dirty_edges_for_player(nodes, player_idx, learning_rate=0.01):
-    """Process dirty edges for a player. Return True if any were dirty."""
+def process_dirty_edges_for_player(nodes, player_idx, learning_rate=0.01, edge_cap=None):
+    """Process dirty edges for a player. Return True if any were dirty.
+    
+    Args:
+        nodes: Dictionary of player nodes
+        player_idx: Index of player to process
+        learning_rate: Learning rate for rating updates
+        edge_cap: Maximum number of dirty edges to process (None = no limit)
+    """
     node = nodes[player_idx]
     any_dirty = False
+    edges_processed = 0
     
-    # Process dirty edges
+    # Process dirty edges (with optional cap)
     for opp_idx, edge in node.edges.items():
+        # Check edge cap
+        if edge_cap is not None and edges_processed >= edge_cap:
+            break
+            
         opp_node = nodes[opp_idx]
         
         # Check if edge is dirty for this player
         if ((edge.player1 == player_idx and edge.dirty_for1) or 
             (edge.player2 == player_idx and edge.dirty_for2)):
             any_dirty = True
+            edges_processed += 1
             
             # Update expected scores
             if edge.player1 == player_idx:
@@ -313,7 +326,7 @@ def process_dirty_edges_for_player(nodes, player_idx, learning_rate=0.01):
     return any_dirty
 
 def onepass_dirty_graph(matches: List[Tuple[str,str,bool]], players: List[str], 
-                        learning_rate: float = 0.01, phase2_iters: int = 5) -> Dict[str,float]:
+                        learning_rate: float = 0.01, phase2_iters: int = 5, edge_cap: int = None) -> Dict[str,float]:
     """Dirty Graph algorithm for Bradley-Terry, adapted for single-pass framework."""
     # Reset counter
     global dg_expected_score_calls
@@ -355,14 +368,14 @@ def onepass_dirty_graph(matches: List[Tuple[str,str,bool]], players: List[str],
         edge.dirty_for1 = edge.dirty_for2 = True
         
         # Process dirty edges for both players
-        process_dirty_edges_for_player(nodes, winner, learning_rate)
-        process_dirty_edges_for_player(nodes, loser, learning_rate)
+        process_dirty_edges_for_player(nodes, winner, learning_rate, edge_cap)
+        process_dirty_edges_for_player(nodes, loser, learning_rate, edge_cap)
     
     # Phase 2: Clean remaining dirty edges
     for _ in range(phase2_iters):
         any_dirty = False
         for player_idx in range(len(players)):
-            if process_dirty_edges_for_player(nodes, player_idx, learning_rate):
+            if process_dirty_edges_for_player(nodes, player_idx, learning_rate, edge_cap):
                 any_dirty = True
         if not any_dirty:
             break
@@ -490,6 +503,7 @@ def main():
     ap.add_argument("--out-prefix", type=str, default="singlepass_", help="Prefix for output CSV files.")
     ap.add_argument("--max-iterations", type=int, default=1000, help="Maximum iterations for batch BT MLE algorithm")
     ap.add_argument("--threshold", type=float, default=1e-10, help="Convergence threshold for batch BT MLE algorithm")
+    ap.add_argument("--edge-cap", type=int, default=None, help="Maximum number of dirty edges to process per player per iteration (DirtyGraph only)")
     args = ap.parse_args()
 
     # Always use all matches
@@ -509,7 +523,7 @@ def main():
     evaluate_method("FTRL-Prox",   matches, players, a_gold, build_fn=lambda ms, ps: onepass_ftrl(ms, ps, alpha=0.1, l1=0.0, l2=1e-3), repeats=args.repeats, seed=args.seed+1, shuffle=True)
     evaluate_method("Diag-Newton", matches, players, a_gold, build_fn=lambda ms, ps: onepass_diag_newton(ms, ps, ridge=1e-2, step_cap=0.1), repeats=args.repeats, seed=args.seed+2, shuffle=True)
     evaluate_method("OPDN",        matches, players, a_gold, build_fn=lambda ms, ps: {p: rating for p, rating in zip(ps, one_pass_opdn_stream([(player_to_idx[p1], player_to_idx[p2], 1 if w1 else 0) for p1, p2, w1 in ms], len(ps), ridge=1e-2, step_cap=0.1))}, repeats=args.repeats, seed=args.seed+3, shuffle=True)
-    evaluate_method("DirtyGraph",  matches, players, a_gold, build_fn=lambda ms, ps: onepass_dirty_graph(ms, ps, learning_rate=len(ps)/len(ms), phase2_iters=1), repeats=args.repeats, seed=args.seed+4, shuffle=True)
+    evaluate_method("DirtyGraph", matches, players, a_gold, build_fn=lambda ms, ps: onepass_dirty_graph(ms, ps, learning_rate=len(ps)/len(ms), phase2_iters=1, edge_cap=args.edge_cap), repeats=args.repeats, seed=args.seed+4, shuffle=True)
     
     # OPDN stream version already evaluated above as "OPDN"
 
@@ -519,7 +533,7 @@ def main():
         ("FTRL-Prox", lambda: onepass_ftrl(matches, players, alpha=0.1, l1=0.0, l2=1e-3)),
         ("Diag-Newton", lambda: onepass_diag_newton(matches, players, ridge=1e-2, step_cap=0.1)),
         ("OPDN", lambda: build_opdn(matches, players)),
-        ("DirtyGraph", lambda: onepass_dirty_graph(matches, players, learning_rate=len(players)/len(matches), phase2_iters=1)),
+        ("DirtyGraph", lambda: onepass_dirty_graph(matches, players, learning_rate=len(players)/len(matches), phase2_iters=1, edge_cap=args.edge_cap)),
     ]
     
     # Run algorithms and process results
