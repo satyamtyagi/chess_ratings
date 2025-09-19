@@ -504,6 +504,7 @@ def main():
     ap.add_argument("--max-iterations", type=int, default=1000, help="Maximum iterations for batch BT MLE algorithm")
     ap.add_argument("--threshold", type=float, default=1e-10, help="Convergence threshold for batch BT MLE algorithm")
     ap.add_argument("--edge-cap", type=int, default=None, help="Maximum number of dirty edges to process per player per iteration (DirtyGraph only)")
+    ap.add_argument("--opdn-passes", type=int, default=1, help="Number of passes through the data for OPDN algorithm (default: 1)")
     args = ap.parse_args()
 
     # Always use all matches
@@ -522,7 +523,7 @@ def main():
     evaluate_method("ISGD",        matches, players, a_gold, build_fn=lambda ms, ps: onepass_isgd(ms, ps, eta=0.1, newton_steps=2, l2=1e-3), repeats=args.repeats, seed=args.seed, shuffle=True)
     evaluate_method("FTRL-Prox",   matches, players, a_gold, build_fn=lambda ms, ps: onepass_ftrl(ms, ps, alpha=0.1, l1=0.0, l2=1e-3), repeats=args.repeats, seed=args.seed+1, shuffle=True)
     evaluate_method("Diag-Newton", matches, players, a_gold, build_fn=lambda ms, ps: onepass_diag_newton(ms, ps, ridge=1e-2, step_cap=0.1), repeats=args.repeats, seed=args.seed+2, shuffle=True)
-    evaluate_method("OPDN",        matches, players, a_gold, build_fn=lambda ms, ps: {p: rating for p, rating in zip(ps, one_pass_opdn_stream([(player_to_idx[p1], player_to_idx[p2], 1 if w1 else 0) for p1, p2, w1 in ms], len(ps), ridge=1e-2, step_cap=0.1))}, repeats=args.repeats, seed=args.seed+3, shuffle=True)
+    evaluate_method("OPDN",        matches, players, a_gold, build_fn=lambda ms, ps: {p: rating for p, rating in zip(ps, multi_pass_opdn_stream([(player_to_idx[p1], player_to_idx[p2], 1 if w1 else 0) for p1, p2, w1 in ms], len(ps), num_passes=args.opdn_passes, ridge=1e-2, step_cap=0.1))}, repeats=args.repeats, seed=args.seed+3, shuffle=True)
     evaluate_method("DirtyGraph", matches, players, a_gold, build_fn=lambda ms, ps: onepass_dirty_graph(ms, ps, learning_rate=len(ps)/len(ms), phase2_iters=1, edge_cap=args.edge_cap), repeats=args.repeats, seed=args.seed+4, shuffle=True)
     
     # OPDN stream version already evaluated above as "OPDN"
@@ -532,7 +533,7 @@ def main():
         ("ISGD", lambda: onepass_isgd(matches, players, eta=0.1, newton_steps=2, l2=1e-3)),
         ("FTRL-Prox", lambda: onepass_ftrl(matches, players, alpha=0.1, l1=0.0, l2=1e-3)),
         ("Diag-Newton", lambda: onepass_diag_newton(matches, players, ridge=1e-2, step_cap=0.1)),
-        ("OPDN", lambda: build_opdn(matches, players)),
+        ("OPDN", lambda: {p: rating for p, rating in zip(players, multi_pass_opdn_stream([(player_to_idx[p1], player_to_idx[p2], 1 if w1 else 0) for p1, p2, w1 in matches], len(players), num_passes=args.opdn_passes, ridge=1e-2, step_cap=0.1))}),
         ("DirtyGraph", lambda: onepass_dirty_graph(matches, players, learning_rate=len(players)/len(matches), phase2_iters=1, edge_cap=args.edge_cap)),
     ]
     
@@ -668,6 +669,38 @@ def one_pass_opdn_stream(matches, n_players, init=None, ridge: float = 0.0, step
         theta[j] -= s
     if recenter and n_players > 0:
         _opdn_recenter(theta)
+    return theta
+
+def multi_pass_opdn_stream(matches, n_players, num_passes=1, init=None, ridge: float = 0.0, step_cap: float | None = None, recenter: bool = True):
+    """Multi-pass diagonal-Newton for an individual-duel stream.
+    matches: iterable of (i, j, y) where y=1 if i wins, 0 if j wins.
+    num_passes: number of passes through the data (default: 1)
+    """
+    eps = 1e-12
+    theta = [0.0]*n_players if init is None else list(init)
+    
+    # Convert matches to list for multiple passes
+    matches_list = list(matches)
+    
+    for pass_num in range(num_passes):
+        for (i, j, y) in matches_list:
+            if i == j:
+                continue
+            d = theta[i] - theta[j]
+            p = _opdn_sigmoid(d)
+            w = p * (1.0 - p)
+            g = (1.0 if y == 1 else 0.0) - p
+            den = max(2.0*w + 2.0*ridge, eps)
+            s = g / den
+            if step_cap is not None:
+                s = max(min(s, step_cap), -step_cap)
+            theta[i] += s
+            theta[j] -= s
+        
+        # Recenter after each pass if requested
+        if recenter and n_players > 0:
+            _opdn_recenter(theta)
+    
     return theta
 
 
