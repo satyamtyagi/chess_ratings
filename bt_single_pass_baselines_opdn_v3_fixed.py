@@ -52,18 +52,13 @@ def save_ratings_to_csv(ratings, wins, output_file):
         wins (dict): Dictionary mapping player IDs to their win counts
         output_file (str): Path to the output CSV file
     """
-    # Calculate ELO from BT ratings
-    factor = 400.0 / math.log(10.0)
-    elo = {p: 1200.0 + factor * ratings[p] for p in ratings}
-    
-    # Write to CSV
-    with open(output_file, 'w', newline='') as f:
+    with open(output_file, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
-        writer.writerow(['player_no', 'bt_rating', 'elo_rating', 'wins'])
-        
-        # Sort by player ID to match other implementations
-        for player in sorted(ratings.keys(), key=lambda x: int(x)):
-            writer.writerow([player, f"{ratings[player]:.6f}", f"{elo[player]:.1f}", wins.get(player, 0)])
+        writer.writerow(['player', 'rating', 'elo', 'wins'])
+        # Sort players alphabetically instead of trying to convert to integers
+        for player in sorted(ratings.keys()):
+            elo = 1200.0 + 400.0 * ratings[player] / math.log(10.0)
+            writer.writerow([player, ratings[player], elo, wins[player]])
     
     print(f"Ratings saved to {output_file}")
 
@@ -333,7 +328,7 @@ def main():
     # Always use all matches
     matches = read_matches(args.csv)
 
-    players = sorted({p for m in matches for p in (m[0], m[1])}, key=lambda x: int(x) if x.isdigit() else x)
+    players = sorted({p for m in matches for p in (m[0], m[1])})
 
     # Gold standard on the SAME subset
     a_gold = batch_bt_mle(matches)
@@ -377,12 +372,14 @@ def main():
         print("Rank | Player |   θ (centered)  |   Elo   | Wins")
         print("-------------------------------------------")
         
-        # Display batch_bt_mle table, sorted by player number but showing true rank
-        order_bt = sorted(players, key=lambda p: int(p))
+        # Display batch_bt_mle table, sorted alphabetically by player ID
+        order_bt = sorted(players)
         # Calculate ranks
-        ranks = {p: idx+1 for idx, p in enumerate(sorted(players, key=lambda p: a_gold[p], reverse=True))}
+        ranks_bt = {p: idx+1 for idx, p in enumerate(sorted(players, key=lambda p: a_gold[p], reverse=True))}
         for p in order_bt:
-            print(f"{ranks[p]:4d} | {int(p):6d} | {a_gold[p]:13.6f} | {elo_bt[p]:7.1f} | {wins_count_bt[p]:4d}")
+            # Format player name to fit in column (truncate if too long)
+            player_display = p[:15] if len(p) > 15 else p
+            print(f"{ranks_bt[p]:4d} | {player_display:15s} | {a_gold[p]:13.6f} | {elo_bt[p]:7.1f} | {wins_count_bt[p]:4d}")
     
     # Save batch_bt_mle to CSV if requested
     if args.save_csv:
@@ -411,16 +408,18 @@ def main():
         
         # Display table unless explicitly disabled
         if not args.no_table:
-            order = sorted(players, key=lambda p: int(p))
+            order = sorted(players)
             print("\n-------------------------------------------")
-            print(f"{name} — One-pass table (subset size = {len(matches)}), sorted by player number)")
+            print(f"{name} — One-pass table (subset size = {len(matches)}), sorted alphabetically by player ID)")
             print("-------------------------------------------")
             print("Rank | Player |   θ (centered)  |   Elo   | Wins")
             print("-------------------------------------------")
             # Calculate ranks
             ranks = {p: idx+1 for idx, p in enumerate(sorted(players, key=lambda p: a_hat[p], reverse=True))}
             for p in order:
-                print(f"{ranks[p]:4d} | {int(p):6d} | {a_hat[p]:13.6f} | {elo[p]:7.1f} | {wins_count[p]:4d}")
+                # Format player name to fit in column (truncate if too long)
+                player_display = p[:15] if len(p) > 15 else p
+                print(f"{ranks[p]:4d} | {player_display:15s} | {a_hat[p]:13.6f} | {elo[p]:7.1f} | {wins_count[p]:4d}")
 
 
 
