@@ -5,6 +5,16 @@ import csv, math, random, argparse
 from collections import defaultdict
 from typing import List, Tuple, Dict
 from dataclasses import dataclass, field
+
+# Global compute counters for different algorithms
+compute_counters = {
+    'batch_bt': 0,
+    'isgd': 0,
+    'ftrl': 0,
+    'diag_newton': 0,
+    'opdn': 0,
+    'dirtygraph': 0
+}
 import numpy as np
 
 try:
@@ -13,12 +23,71 @@ try:
 except Exception:
     HAVE_SCIPY = False
 
-# Counter for Dirty Graph expected score calculations
+# Counter for Dirty Graph expected score calculations (legacy)
 dg_expected_score_calls = 0
+
+def reset_compute_counters():
+    """Reset all compute counters to zero."""
+    global compute_counters, dg_expected_score_calls
+    for key in compute_counters:
+        compute_counters[key] = 0
+    dg_expected_score_calls = 0
+
+def sigmoid_with_counter(x: float, algorithm: str) -> float:
+    """Compute sigmoid with counter tracking for specified algorithm."""
+    global compute_counters
+    compute_counters[algorithm] += 1
+    if x >= 0:
+        z = math.exp(-x)
+        return 1.0 / (1.0 + z)
+    else:
+        z = math.exp(x)
+        return z / (1.0 + z)
 
 # ----------------- IO -----------------
 
-def read_matches(csv_path: str) -> List[Tuple[str,str,bool]]:
+def read_matches(filename: str) -> List[Tuple[str, str, bool]]:
+    """Read CSV matches into (p1, p2, won_flag) format.""" 
+    matches = []
+    with open(filename, 'r') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            # Auto-detect column names
+            if 'player_first' in row:
+                p1, p2 = row['player_first'], row['player_second']
+            elif 'model_a' in row:
+                p1, p2 = row['model_a'], row['model_b']
+            else:
+                raise ValueError(f"Unknown column format. Available columns: {list(row.keys())}")
+            
+            result = row['result'].strip().lower()
+            won = (result == 'w')
+            matches.append((p1, p2, won))
+    return matches
+
+def read_true_ratings(filename: str) -> Dict[str, float]:
+    """Read true player ratings from CSV file."""
+    ratings = {}
+    with open(filename, 'r') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            player_id = str(row['player_id'])
+            rating = float(row['rating'])
+            ratings[player_id] = rating
+    return ratings
+
+def read_true_thetas(filename: str) -> Dict[str, float]:
+    """Read true player Bradley-Terry thetas from CSV file."""
+    thetas = {}
+    with open(filename, 'r') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            player_id = str(row['player_id'])
+            theta = float(row['theta'])
+            thetas[player_id] = theta
+    return thetas
+
+def read_matches_old(csv_path: str) -> List[Tuple[str,str,bool]]:
     matches = []
     with open(csv_path, newline='', encoding='utf-8') as f:
         rdr = csv.reader(f)
@@ -38,13 +107,47 @@ def read_matches(csv_path: str) -> List[Tuple[str,str,bool]]:
 # ----------------- Utilities -----------------
 
 def sigmoid(x: float) -> float:
-    # numerically stable logistic
-    if x >= 0.0:
-        z = math.exp(-x)
-        return 1.0 / (1.0 + z)
+    # numerically stable logistic (used by ISGD and FTRL)
+    # Note: This will count for both ISGD and FTRL - we'll separate them by context in calls
+    return sigmoid_with_counter(x, 'isgd')  # Default to ISGD for now
+
+def sigmoid_ftrl(x: float) -> float:
+    # sigmoid for FTRL algorithm
+    return sigmoid_with_counter(x, 'ftrl')
+
+def sigmoid_diag_newton(x: float) -> float:
+    # sigmoid for diagonal newton algorithm
+    return sigmoid_with_counter(x, 'diag_newton')
+
+def print_compute_stats(algorithm_name: str):
+    """Print compute statistics for the specified algorithm."""
+    global compute_counters, dg_expected_score_calls
+    
+    algo_key = algorithm_name.lower().replace('-', '').replace(' ', '')
+    if algo_key == 'dirtygraph':
+        count = compute_counters['dirtygraph']
+        print(f"[{algorithm_name}] Sigmoid computations: {count:,}")
+    elif algo_key == 'opdn':
+        count = compute_counters['opdn'] 
+        print(f"[{algorithm_name}] Sigmoid computations: {count:,}")
+    elif algo_key == 'isgd':
+        count = compute_counters['isgd']
+        print(f"[{algorithm_name}] Sigmoid computations: {count:,}")
+    elif algo_key == 'ftrlprox':
+        count = compute_counters['ftrl']
+        print(f"[{algorithm_name}] Sigmoid computations: {count:,}")
+    elif algo_key == 'diagnewton':
+        count = compute_counters['diag_newton']
+        print(f"[{algorithm_name}] Sigmoid computations: {count:,}")
+    elif algo_key == 'batchbt' or algorithm_name == 'Batch BT':
+        count = compute_counters['batch_bt']
+        print(f"[{algorithm_name}] Sigmoid computations: {count:,}")
     else:
-        z = math.exp(x)
-        return z / (1.0 + z)
+        print(f"[{algorithm_name}] Compute stats not tracked")
+    
+def get_total_compute_operations():
+    """Get total sigmoid operations across all algorithms."""
+    return sum(compute_counters.values())
         
 def save_ratings_to_csv(ratings, wins, output_file):
     """
@@ -59,7 +162,7 @@ def save_ratings_to_csv(ratings, wins, output_file):
         writer = csv.writer(f)
         writer.writerow(['player', 'rating', 'elo', 'wins'])
         for player in sorted(ratings.keys()):
-            elo = 1200.0 + 400.0 * ratings[player] / math.log(10.0)
+            elo = 1400.0 + 400.0 * ratings[player] / math.log(10.0)
             writer.writerow([player, ratings[player], elo, wins[player]])
     
     print(f"Ratings saved to {output_file}")
@@ -97,6 +200,9 @@ def online_metrics(a: Dict[str,float], matches: List[Tuple[str,str,bool]], order
 
 def batch_bt_mle(matches: List[Tuple[str,str,bool]], max_iters: int = 1000, threshold: float = 1e-10) -> Dict[str,float]:
     # MM solver; returns centered log-strengths a (sum zero)
+    # Reset counter for batch BT
+    compute_counters['batch_bt'] = 0
+    
     wins = defaultdict(lambda: defaultdict(int))
     players = set()
     for p1, p2, w1 in matches:
@@ -117,6 +223,8 @@ def batch_bt_mle(matches: List[Tuple[str,str,bool]], max_iters: int = 1000, thre
                 if j == i: continue
                 m_ij = wins[i].get(j,0) + wins[j].get(i,0)
                 if m_ij == 0: continue
+                # Count this ratio computation as equivalent to sigmoid evaluation
+                compute_counters['batch_bt'] += 1
                 denom += m_ij * (w[i] / (w[i] + w[j]))
             denom += eps
             wi_new = w[i] * (num / denom)
@@ -211,7 +319,7 @@ def onepass_ftrl(matches: List[Tuple[str,str,bool]], players: List[str], alpha: 
     for p1, p2, w1 in matches:
         y = 1.0 if w1 else 0.0
         d = a[p1] - a[p2]
-        p = sigmoid(d)
+        p = sigmoid_ftrl(d)
         # Gradients wrt a[p1], a[p2]
         g1 = -(y - p)
         g2 = +(y - p)
@@ -236,7 +344,7 @@ def onepass_diag_newton(matches: List[Tuple[str,str,bool]], players: List[str],
     for p1, p2, w1 in matches:
         y = 1.0 if w1 else 0.0
         d = a[p1] - a[p2]
-        p = sigmoid(d)
+        p = sigmoid_diag_newton(d)
         w = p*(1-p)                        # curvature
         # Per-parameter step with cap
         s1 = max(min((y - p) / H[p1], step_cap), -step_cap)
@@ -253,7 +361,7 @@ def compute_dg_expected_score(r1: float, r2: float) -> float:
     global dg_expected_score_calls
     dg_expected_score_calls += 1
     x = max(min(r1 - r2, 100.0), -100.0)  # Clamping to ±100
-    return 1.0 / (1.0 + math.exp(-x))
+    return sigmoid_with_counter(x, 'dirtygraph')
 
 def refresh_edge_expected(edge: Edge, node1: Node, node2: Node) -> None:
     """Update expected scores for an edge between two nodes."""
@@ -311,11 +419,89 @@ def process_dirty_edges_for_player(nodes, player_idx, learning_rate=0.01, edge_c
                 refresh_edge_expected(edge, opp_node, node)
                 edge.dirty_for2 = False  # Mark as clean for this player
     
+    """
     # Update player rating if any edges were dirty
     if any_dirty:
+        # ONLY accumulate gradient from edges refreshed in THIS call
+        processed = []  # list of (A_node, E_node) for edges we just cleaned
+
+        for opp_idx, edge in node.edges.items():
+            # is this edge dirty for THIS player?
+            is_dirty_for_player = (
+                (edge.player1 == player_idx and edge.dirty_for1) or
+                (edge.player2 == player_idx and edge.dirty_for2)
+            )
+            if not is_dirty_for_player:
+                continue
+            
+            # cap-K guard if you use one
+            if edge_cap is not None and len(processed) >= edge_cap:
+                break
+
+            # remove old expected contribution for THIS node
+            if edge.player1 == player_idx:
+                node.expected -= edge.contribution1
+            else:
+                node.expected -= edge.contribution2
+
+            # recompute expected on this edge
+            opp_node = nodes[opp_idx]
+            n = edge.total_games()
+            if n > 0:
+                p_node = compute_dg_expected_score(node.rating, opp_node.rating)
+                E_node = n * p_node
+            else:
+                E_node = 0.0
+
+            # install new expected + clear dirtiness for THIS side
+            if edge.player1 == player_idx:
+                edge.contribution1 = E_node
+                edge.dirty_for1 = False
+                A_node = edge.wins1
+            else:
+                edge.contribution2 = E_node
+                edge.dirty_for2 = False
+                A_node = edge.wins2
+
+            node.expected += E_node
+            processed.append((A_node, E_node))
+
+        if processed:
+            local_grad = sum(A - E for (A, E) in processed)
+            node.rating += learning_rate * local_grad
+
+        # mark OUTBOUND edges dirty for neighbors (since this node changed)
+        for opp_idx, edge in node.edges.items():
+            if edge.player1 == player_idx:
+                edge.dirty_for2 = True
+            else:
+                edge.dirty_for1 = True
+
+
+
+
+    """
+    # Update player rating if any edges were dirty
+    if any_dirty:
+        # Simple gradient approach (original):
         gradient = node.actual - node.expected
         node.rating += learning_rate * gradient
-        
+        """
+        # FIX: accumulate gradient only from the edges we refreshed now
+        local_grad = 0.0
+        for opp_idx, edge in node.edges.items():
+            # only count edges we marked clean for *this* player in this call
+            if edge.player1 == player_idx and not edge.dirty_for1:
+                A_node = edge.wins1
+                E_node = edge.contribution1
+                local_grad += (A_node - E_node)
+            elif edge.player2 == player_idx and not edge.dirty_for2:
+                A_node = edge.wins2
+                E_node = edge.contribution2
+                local_grad += (A_node - E_node)
+
+        node.rating += learning_rate * local_grad
+        """
         # Mark all edges to neighbors as dirty (for the neighbor's side)
         for opp_idx, edge in node.edges.items():
             if edge.player1 == player_idx:
@@ -389,8 +575,9 @@ def onepass_dirty_graph(matches: List[Tuple[str,str,bool]], players: List[str],
 
 # ----------------- Evaluation -----------------
 
-def evaluate_method(name: str, matches: List[Tuple[str,str,bool]], players: List[str], a_gold: Dict[str,float],
-                    build_fn, repeats: int=10, seed: int=0, shuffle: bool=True):
+def evaluate_method(name: str, matches: List[Tuple[str,str,bool]], players: List[str], a_gold: Dict[str,float], 
+                   build_fn, repeats: int = 10, seed: int = 0, shuffle: bool = True):
+    """Evaluate a rating method against the gold standard."""
     rng = random.Random(seed)
     N = len(matches)
     rmse_list = []; tau_list = []; rho_list = []
@@ -402,6 +589,9 @@ def evaluate_method(name: str, matches: List[Tuple[str,str,bool]], players: List
             rng.shuffle(order)
         ordered = [matches[i] for i in order]
 
+        # Reset compute counters for this run
+        reset_compute_counters()
+        
         # Streaming online metrics during the single pass
         a_tmp = {p: 0.0 for p in players}  # ephemeral params for metrics
         # We'll compute online metrics INSIDE each builder as it updates; for simplicity,
@@ -440,9 +630,12 @@ def evaluate_method(name: str, matches: List[Tuple[str,str,bool]], players: List
     def fmt(xs): 
         if not xs: return "n/a"
         return f"{np.mean(xs):.6f} ± {np.std(xs):.6f}"
-    print(f"[{name}]  RMSE vs BT: {fmt(rmse_list)};  "
+    print(f"[{name}]  RMSE vs Gold: {fmt(rmse_list)};  "
           + (f"τ: {fmt(tau_list)};  ρ: {fmt(rho_list)};  " if HAVE_SCIPY else "")
           + f"online acc: {fmt(acc_list)};  Brier: {fmt(brier_list)};  logloss: {fmt(logloss_list)}")
+    
+    # Display compute statistics
+    print_compute_stats(name)
 
 # ----------------- Main -----------------
 
@@ -462,35 +655,40 @@ def aggregate_pairs(ordered, players):
     return pairs, len(players)
 
 
-def one_sweep_diag_newton_counts(pairs, n_players):
-    """Single Jacobi-style diagonal-Newton sweep from theta=0 over aggregated counts."""
+def k_sweep_diag_newton_counts(pairs, n_players, sweeps=1, h_floor=1e-12):
+    """Multi-sweep Jacobi-style diagonal-Newton over aggregated counts."""
     import math
     def _sig(x):
-        if x >= 0:
-            z = math.exp(-x); return 1.0/(1.0+z)
-        else:
-            z = math.exp(x);  return z/(1.0+z)
-    theta0 = [0.0]*n_players
-    g = [0.0]*n_players
-    h = [0.0]*n_players
-    for (i,j),(n,a) in pairs.items():
-        d = theta0[i]-theta0[j]
-        p = _sig(d)
-        w = n * p * (1.0 - p)
-        gi = a - n * p
-        g[i] += gi; g[j] -= gi
-        h[i] += w;  h[j] += w
-    # unit Newton step (no LR), Jacobi update
-    theta1 = [theta0[k] + (g[k] / (h[k] if h[k] > 1e-12 else 1e-12)) for k in range(n_players)]
-    mu = sum(theta1)/n_players
-    for k in range(n_players):
-        theta1[k] -= mu
-    return theta1
+        return sigmoid_with_counter(x, 'opdn')
 
-def build_opdn(ordered, players):
-    """Counts-based one-sweep diagonal-Newton (Jacobi), unit step, recenter once."""
+    theta = [0.0]*n_players
+    for _ in range(sweeps):
+        g = [0.0]*n_players
+        h = [h_floor]*n_players
+        for (i, j), (n, a) in pairs.items():
+            d = theta[i] - theta[j]
+            p = _sig(d)
+            w = n * p * (1.0 - p)
+            gi = a - n * p
+            g[i] += gi; g[j] -= gi
+            h[i] += w;  h[j] += w
+        # unit Newton step, per-node (Jacobi)
+        for k in range(n_players):
+            theta[k] += g[k] / h[k]
+        # recenter each sweep
+        mean = sum(theta)/n_players
+        for k in range(n_players):
+            theta[k] -= mean
+    return theta
+
+def one_sweep_diag_newton_counts(pairs, n_players):
+    """Single Jacobi-style diagonal-Newton sweep from theta=0 over aggregated counts."""
+    return k_sweep_diag_newton_counts(pairs, n_players, sweeps=1)
+
+def build_opdn(ordered, players, sweeps=1):
+    """Counts-based diagonal-Newton (Jacobi) with 'sweeps' passes."""
     pairs, n_players = aggregate_pairs(ordered, players)
-    theta = one_sweep_diag_newton_counts(pairs, n_players)
+    theta = k_sweep_diag_newton_counts(pairs, n_players, sweeps=sweeps)
     return {p: r for p, r in zip(players, theta)}
 
 def main():
@@ -503,8 +701,11 @@ def main():
     ap.add_argument("--out-prefix", type=str, default="singlepass_", help="Prefix for output CSV files.")
     ap.add_argument("--max-iterations", type=int, default=1000, help="Maximum iterations for batch BT MLE algorithm")
     ap.add_argument("--threshold", type=float, default=1e-10, help="Convergence threshold for batch BT MLE algorithm")
-    ap.add_argument("--edge-cap", type=int, default=None, help="Maximum number of dirty edges to process per player per iteration (DirtyGraph only)")
+    ap.add_argument("--edge-cap", type=int, default=10, help="Edge cap for DirtyGraph algorithm (default: 10)")
     ap.add_argument("--opdn-passes", type=int, default=1, help="Number of passes through the data for OPDN algorithm (default: 1)")
+    ap.add_argument("--true-ratings", type=str, default=None, help="Path to CSV file with true player ratings for comparison (default: None, uses Batch BT)")
+    ap.add_argument("--elo-comparison", action="store_true", help="Compare algorithms directly in ELO space instead of Bradley-Terry space")
+    ap.add_argument("--bt-comparison", action="store_true", help="Compare algorithms directly in Bradley-Terry theta space")
     args = ap.parse_args()
 
     # Always use all matches
@@ -513,17 +714,180 @@ def main():
     # Get player list
     players = sorted({p for m in matches for p in (m[0], m[1])}, key=lambda x: int(x) if x.isdigit() else x)
     
-    # Gold standard on the SAME subset
-    a_gold = batch_bt_mle(matches, max_iters=args.max_iterations, threshold=args.threshold)
+    # Determine gold standard
+    if args.true_ratings:
+        # Check if we're dealing with BT thetas or ELO ratings
+        with open(args.true_ratings, 'r') as f:
+            header = f.readline().strip()
+            is_theta_file = 'theta' in header.lower()
+        
+        if is_theta_file:
+            # Use true Bradley-Terry thetas as gold standard
+            true_thetas = read_true_thetas(args.true_ratings)
+            a_gold = {p: true_thetas.get(p, 0.0) for p in players}
+            # Center the thetas (sum to zero)
+            mean_theta = sum(a_gold.values()) / len(a_gold)
+            a_gold = {p: v - mean_theta for p, v in a_gold.items()}
+            print(f"Using true Bradley-Terry thetas as gold standard (mean: {mean_theta:.3f})")
+            gold_name = "True Thetas"
+        else:
+            # Use true ELO ratings as gold standard
+            true_ratings = read_true_ratings(args.true_ratings)
+            # Convert ELO ratings to Bradley-Terry log-strengths
+            # ELO: P(i beats j) = 1/(1 + 10^((R_j - R_i)/400))
+            # BT:  P(i beats j) = 1/(1 + exp(a_j - a_i))
+            # So: a_i = (R_i / 400) * log(10) + constant
+            ratings_values = [true_ratings.get(p, 1400) for p in players]  # Default 1400 if missing
+            mean_rating = sum(ratings_values) / len(ratings_values)
+            a_gold = {p: (true_ratings.get(p, 1400) / 400.0) * math.log(10) for p in players}
+            # Center the ratings (sum to zero)
+            mean_log = sum(a_gold.values()) / len(a_gold)
+            a_gold = {p: v - mean_log for p, v in a_gold.items()}
+            print(f"Using true ELO ratings as gold standard (mean: {mean_rating:.1f})")
+            gold_name = "True Ratings"
+    else:
+        # Use Batch BT as gold standard
+        a_gold = batch_bt_mle(matches, max_iters=args.max_iterations, threshold=args.threshold)
+        print_compute_stats("Batch BT")
+        gold_name = "Batch BT"
 
     # Create player ID to index mapping
     player_to_idx = {p: i for i, p in enumerate(players)}
     
-    # Evaluate each one-pass method against BT
+    # Bradley-Terry comparison mode
+    if args.bt_comparison and args.true_ratings:
+        print("=== BRADLEY-TERRY Direct Comparison ===")
+        true_thetas = read_true_thetas(args.true_ratings)
+        
+        # Test each algorithm and collect results
+        algorithms = [
+            ("Batch BT", lambda ms, ps: batch_bt_mle(ms, max_iters=args.max_iterations, threshold=args.threshold)),
+            ("ISGD", lambda ms, ps: onepass_isgd(ms, ps, eta=0.1, newton_steps=2, l2=1e-3)),
+            ("FTRL-Prox", lambda ms, ps: onepass_ftrl(ms, ps, alpha=0.1, l1=0.0, l2=1e-3)),
+            ("Diag-Newton", lambda ms, ps: onepass_diag_newton(ms, ps, ridge=1e-2, step_cap=0.1)),
+            ("OPDN", lambda ms, ps: build_opdn(ms, ps, sweeps=args.opdn_passes)),
+            ("DirtyGraph", lambda ms, ps: onepass_dirty_graph(ms, ps, learning_rate=len(ps)/len(ms), phase2_iters=1, edge_cap=args.edge_cap))
+        ]
+        
+        # Collect results from all algorithms
+        results = {}
+        
+        for algo_name, build_fn in algorithms:
+            # Reset counters
+            reset_compute_counters()
+            
+            # Run algorithm
+            a_pred = build_fn(matches, players)
+            
+            # Calculate RMSE in theta space (no conversion needed)
+            rmse = 0.0
+            count = 0
+            for p in players:
+                if p in true_thetas and p in a_pred:
+                    rmse += (true_thetas[p] - a_pred[p]) ** 2
+                    count += 1
+            
+            if count > 0:
+                rmse = math.sqrt(rmse / count)
+                print(f"[{algo_name}] Bradley-Terry Theta RMSE: {rmse:.6f}")
+                print_compute_stats(algo_name)
+            
+            results[algo_name] = a_pred
+        
+        # Print comparison table
+        print("\n" + "="*100)
+        print("BRADLEY-TERRY THETA COMPARISON TABLE")
+        print("="*100)
+        print(f"{'Player':>6} | {'True θ':>8} | {'Batch BT':>8} | {'ISGD':>8} | {'FTRL':>8} | {'Diag-N':>8} | {'OPDN':>8} | {'DirtyG':>8}")
+        print("-" * 100)
+        
+        for p in sorted(players, key=lambda x: int(x) if x.isdigit() else x):
+            if p in true_thetas:
+                row = f"{p:>6} | {true_thetas[p]:>8.3f}"
+                for algo_name in ["Batch BT", "ISGD", "FTRL-Prox", "Diag-Newton", "OPDN", "DirtyGraph"]:
+                    if algo_name in results and p in results[algo_name]:
+                        row += f" | {results[algo_name][p]:>8.3f}"
+                    else:
+                        row += f" | {'N/A':>8}"
+                print(row)
+        
+        print("="*100)
+        
+        return  # Exit early for BT comparison mode
+    
+    # ELO comparison mode
+    if args.elo_comparison and args.true_ratings:
+        print("=== ELO-to-ELO Direct Comparison ===")
+        true_elo_ratings = read_true_ratings(args.true_ratings)
+        
+        # Test each algorithm and collect results
+        algorithms = [
+            ("Batch BT", lambda ms, ps: batch_bt_mle(ms, max_iters=args.max_iterations, threshold=args.threshold)),
+            ("ISGD", lambda ms, ps: onepass_isgd(ms, ps, eta=0.1, newton_steps=2, l2=1e-3)),
+            ("FTRL-Prox", lambda ms, ps: onepass_ftrl(ms, ps, alpha=0.1, l1=0.0, l2=1e-3)),
+            ("Diag-Newton", lambda ms, ps: onepass_diag_newton(ms, ps, ridge=1e-2, step_cap=0.1)),
+            ("OPDN", lambda ms, ps: build_opdn(ms, ps, sweeps=args.opdn_passes)),
+            ("DirtyGraph", lambda ms, ps: onepass_dirty_graph(ms, ps, learning_rate=len(ps)/len(ms), phase2_iters=1, edge_cap=args.edge_cap))
+        ]
+        
+        # Collect results from all algorithms
+        results = {}
+        
+        for algo_name, build_fn in algorithms:
+            # Reset counters
+            reset_compute_counters()
+            
+            # Run algorithm
+            a_pred = build_fn(matches, players)
+            
+            # Convert to ELO using existing conversion logic (a * 400/ln(10) + 1400)
+            pred_elo = {p: a * 400.0 / math.log(10) + 1400.0 for p, a in a_pred.items()}
+            
+            # Calculate RMSE
+            rmse = 0.0
+            count = 0
+            for p in players:
+                if p in true_elo_ratings and p in pred_elo:
+                    rmse += (true_elo_ratings[p] - pred_elo[p]) ** 2
+                    count += 1
+            
+            if count > 0:
+                rmse = math.sqrt(rmse / count)
+                print(f"[{algo_name}] ELO RMSE: {rmse:.6f}")
+                print_compute_stats(algo_name)
+            
+            results[algo_name] = pred_elo
+        
+        # Print comparison table
+        print("\n" + "="*100)
+        print("ELO COMPARISON TABLE")
+        print("="*100)
+        print(f"{'Player':>6} | {'True ELO':>8} | {'Batch BT':>8} | {'ISGD':>8} | {'FTRL':>8} | {'Diag-N':>8} | {'OPDN':>8} | {'DirtyG':>8}")
+        print("-" * 100)
+        
+        for p in sorted(players, key=lambda x: int(x) if x.isdigit() else x):
+            if p in true_elo_ratings:
+                row = f"{p:>6} | {true_elo_ratings[p]:>8.1f}"
+                for algo_name in ["Batch BT", "ISGD", "FTRL-Prox", "Diag-Newton", "OPDN", "DirtyGraph"]:
+                    if algo_name in results and p in results[algo_name]:
+                        row += f" | {results[algo_name][p]:>8.1f}"
+                    else:
+                        row += f" | {'N/A':>8}"
+                print(row)
+        
+        print("="*100)
+        
+        return  # Exit early for ELO comparison mode
+    
+    # Regular evaluation against gold standard
+    if args.true_ratings:
+        # Include Batch BT in comparison when using true ratings
+        evaluate_method("Batch BT", matches, players, a_gold, build_fn=lambda ms, ps: batch_bt_mle(ms, max_iters=args.max_iterations, threshold=args.threshold), repeats=args.repeats, seed=args.seed+5, shuffle=False)
+    
     evaluate_method("ISGD",        matches, players, a_gold, build_fn=lambda ms, ps: onepass_isgd(ms, ps, eta=0.1, newton_steps=2, l2=1e-3), repeats=args.repeats, seed=args.seed, shuffle=True)
     evaluate_method("FTRL-Prox",   matches, players, a_gold, build_fn=lambda ms, ps: onepass_ftrl(ms, ps, alpha=0.1, l1=0.0, l2=1e-3), repeats=args.repeats, seed=args.seed+1, shuffle=True)
     evaluate_method("Diag-Newton", matches, players, a_gold, build_fn=lambda ms, ps: onepass_diag_newton(ms, ps, ridge=1e-2, step_cap=0.1), repeats=args.repeats, seed=args.seed+2, shuffle=True)
-    evaluate_method("OPDN",        matches, players, a_gold, build_fn=lambda ms, ps: {p: rating for p, rating in zip(ps, multi_pass_opdn_stream([(player_to_idx[p1], player_to_idx[p2], 1 if w1 else 0) for p1, p2, w1 in ms], len(ps), num_passes=args.opdn_passes, ridge=1e-2, step_cap=0.1))}, repeats=args.repeats, seed=args.seed+3, shuffle=True)
+    evaluate_method("OPDN",        matches, players, a_gold, build_fn=lambda ms, ps: build_opdn(ms, ps, sweeps=args.opdn_passes), repeats=args.repeats, seed=args.seed+3, shuffle=True)
     evaluate_method("DirtyGraph", matches, players, a_gold, build_fn=lambda ms, ps: onepass_dirty_graph(ms, ps, learning_rate=len(ps)/len(ms), phase2_iters=1, edge_cap=args.edge_cap), repeats=args.repeats, seed=args.seed+4, shuffle=True)
     
     # OPDN stream version already evaluated above as "OPDN"
@@ -533,7 +897,7 @@ def main():
         ("ISGD", lambda: onepass_isgd(matches, players, eta=0.1, newton_steps=2, l2=1e-3)),
         ("FTRL-Prox", lambda: onepass_ftrl(matches, players, alpha=0.1, l1=0.0, l2=1e-3)),
         ("Diag-Newton", lambda: onepass_diag_newton(matches, players, ridge=1e-2, step_cap=0.1)),
-        ("OPDN", lambda: {p: rating for p, rating in zip(players, multi_pass_opdn_stream([(player_to_idx[p1], player_to_idx[p2], 1 if w1 else 0) for p1, p2, w1 in matches], len(players), num_passes=args.opdn_passes, ridge=1e-2, step_cap=0.1))}),
+        ("OPDN", lambda: build_opdn(matches, players, sweeps=args.opdn_passes)),
         ("DirtyGraph", lambda: onepass_dirty_graph(matches, players, learning_rate=len(players)/len(matches), phase2_iters=1, edge_cap=args.edge_cap)),
     ]
     
@@ -547,7 +911,7 @@ def main():
     
     # Calculate ELO ratings for batch_bt_mle
     factor = 400.0 / math.log(10.0)
-    elo_bt = {p: 1200.0 + factor * a_gold[p] for p in players}
+    elo_bt = {p: 1400.0 + factor * a_gold[p] for p in players}
     
     # Display batch_bt_mle table if requested
     if not args.no_table:
@@ -584,7 +948,7 @@ def main():
         
         # Calculate ELO ratings
         factor = 400.0 / math.log(10.0)
-        elo = {p: 1200.0 + factor * a_hat[p] for p in players}
+        elo = {p: 1400.0 + factor * a_hat[p] for p in players}
         
         # Save to CSV if requested
         if args.save_csv:
@@ -671,37 +1035,6 @@ def one_pass_opdn_stream(matches, n_players, init=None, ridge: float = 0.0, step
         _opdn_recenter(theta)
     return theta
 
-def multi_pass_opdn_stream(matches, n_players, num_passes=1, init=None, ridge: float = 0.0, step_cap: float | None = None, recenter: bool = True):
-    """Multi-pass diagonal-Newton for an individual-duel stream.
-    matches: iterable of (i, j, y) where y=1 if i wins, 0 if j wins.
-    num_passes: number of passes through the data (default: 1)
-    """
-    eps = 1e-12
-    theta = [0.0]*n_players if init is None else list(init)
-    
-    # Convert matches to list for multiple passes
-    matches_list = list(matches)
-    
-    for pass_num in range(num_passes):
-        for (i, j, y) in matches_list:
-            if i == j:
-                continue
-            d = theta[i] - theta[j]
-            p = _opdn_sigmoid(d)
-            w = p * (1.0 - p)
-            g = (1.0 if y == 1 else 0.0) - p
-            den = max(2.0*w + 2.0*ridge, eps)
-            s = g / den
-            if step_cap is not None:
-                s = max(min(s, step_cap), -step_cap)
-            theta[i] += s
-            theta[j] -= s
-        
-        # Recenter after each pass if requested
-        if recenter and n_players > 0:
-            _opdn_recenter(theta)
-    
-    return theta
 
 
 if __name__ == "__main__":
