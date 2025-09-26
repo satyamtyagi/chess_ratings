@@ -19,6 +19,17 @@ env/
 *.swp
 *.swo
 
+# Data files
+datasets/*.csv
+datasets/*.parquet
+
+# Generated plots and results
+*.pdf
+*.png
+*.csv
+!requirements.txt
+!README.md
+
 # OS specific files
 .DS_Store
 Thumbs.db

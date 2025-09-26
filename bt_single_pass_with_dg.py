@@ -10,10 +10,12 @@ from dataclasses import dataclass, field
 compute_counters = {
     'batch_bt': 0,
     'isgd': 0,
-    'ftrl': 0,
+    'ftrl': 0,  
     'diag_newton': 0,
     'opdn': 0,
-    'dirtygraph': 0
+    'dirtygraph': 0,
+    'bt-sgd-counts': 0,
+    'bt-sgd-duels': 0
 }
 import numpy as np
 
@@ -142,6 +144,12 @@ def print_compute_stats(algorithm_name: str):
     elif algo_key == 'batchbt' or algorithm_name == 'Batch BT':
         count = compute_counters['batch_bt']
         print(f"[{algorithm_name}] Sigmoid computations: {count:,}")
+    elif algo_key == 'btsgdcounts':
+        count = compute_counters['bt-sgd-counts']
+        print(f"[{algorithm_name}] Sigmoid computations: {count:,}")
+    elif algo_key == 'btsgdduels':
+        count = compute_counters['bt-sgd-duels']
+        print(f"[{algorithm_name}] Sigmoid computations: {count:,}")
     else:
         print(f"[{algorithm_name}] Compute stats not tracked")
     
@@ -195,6 +203,179 @@ def online_metrics(a: Dict[str,float], matches: List[Tuple[str,str,bool]], order
         logloss += -( y*math.log(max(p,eps)) + (1-y)*math.log(max(1-p,eps)) )
         n += 1
     return (acc/n if n else 0.0, brier/n if n else 0.0, logloss/n if n else 0.0)
+
+# ===== Bradley–Terry: SGD solvers ============================================
+
+def _sigmoid_sgd(x, algorithm_name='bt_sgd_counts'):
+    """Stable sigmoid with light clamp on the logit (optional)"""
+    global compute_counters
+    if algorithm_name in compute_counters:
+        compute_counters[algorithm_name] += 1
+    if x < -100: 
+        return 0.0
+    if x > 100:  
+        return 1.0
+    return 1.0 / (1.0 + math.exp(-x))
+
+def _center_sgd(theta):
+    """Center theta array so mean is zero"""
+    mu = float(np.mean(theta))
+    theta -= mu
+    return theta
+
+def bt_sgd_from_counts(
+    a_counts, n_counts,             # dict[(i,j)] -> a_ij, n_ij  (i<j recommended)
+    n_items,                         # number of items
+    epochs=5,
+    eta=0.1,                         # step size
+    recenter_each_epoch=True,
+    shuffle_pairs=True,
+    clamp_p=1e-12
+):
+    """
+    Batch BT–SGD over aggregated counts.
+    Gradient for item i:  g_i = sum_j (a_ij - n_ij * sigma(theta_i - theta_j))
+    We loop over unique pairs and accumulate node-wise gradients each epoch.
+    """
+    global compute_counters
+    compute_counters['bt-sgd-counts'] = 0
+    
+    theta = np.zeros(n_items, dtype=float)
+
+    # Build symmetric adjacency from counts
+    pairs = []
+    for (i, j), n_ij in n_counts.items():
+        if n_ij <= 0: 
+            continue
+        a_ij = a_counts.get((i, j), 0)
+        pairs.append((i, j, a_ij, n_ij))
+
+    for _ in range(epochs):
+        if shuffle_pairs:
+            random.shuffle(pairs)
+
+        # accumulate gradients per node
+        g = np.zeros(n_items, dtype=float)
+
+        for i, j, a_ij, n_ij in pairs:
+            # model prob i beats j
+            pij = _sigmoid_sgd(theta[i] - theta[j], 'bt-sgd-counts')
+            # optional clamp to avoid exactly 0/1
+            if pij < clamp_p: 
+                pij = clamp_p
+            elif pij > 1.0 - clamp_p:
+                pij = 1.0 - clamp_p
+
+            # residual contributions to the node-wise gradient
+            # g_i += a_ij - n_ij * pij
+            # g_j -= a_ij - n_ij * pij
+            r_ij_total = a_ij - n_ij * pij
+            g[i] += r_ij_total
+            g[j] -= r_ij_total
+
+        # SGD step (Jacobi-style: use grads accumulated from this epoch)
+        theta += eta * g
+
+        if recenter_each_epoch:
+            _center_sgd(theta)
+
+    return _center_sgd(theta.copy())
+
+
+def bt_sgd_over_duels(
+    duels,            # list of (i, j, y) with y in {0,1} (1 if i wins)
+    n_items,
+    epochs=5,
+    eta=0.1,
+    recenter_each_epoch=True,
+    shuffle_each_epoch=True,
+    clamp_p=1e-12
+):
+    """
+    Classic per-duel BT–SGD (multiple passes).
+    For each duel (i,j,y): r_ij = y - sigma(theta_i - theta_j)
+                           theta_i += eta * r_ij
+                           theta_j -= eta * r_ij
+    """
+    global compute_counters
+    compute_counters['bt-sgd-duels'] = 0
+    
+    theta = np.zeros(n_items, dtype=float)
+    duels = list(duels)
+
+    for _ in range(epochs):
+        if shuffle_each_epoch:
+            random.shuffle(duels)
+
+        for i, j, y in duels:
+            # Track computation for bt-sgd-duels
+            compute_counters['bt-sgd-duels'] += 1
+            pij = 1.0 / (1.0 + math.exp(-(theta[i] - theta[j])))
+            
+            if pij < clamp_p: 
+                pij = clamp_p
+            elif pij > 1.0 - clamp_p:
+                pij = 1.0 - clamp_p
+
+            r_ij = y - pij
+            theta[i] += eta * r_ij
+            theta[j] -= eta * r_ij
+
+        if recenter_each_epoch:
+            _center_sgd(theta)
+
+    return _center_sgd(theta.copy())
+
+# Wrapper functions to integrate with existing framework
+def bt_sgd_counts_wrapper(matches: List[Tuple[str,str,bool]], players: List[str], epochs=5, eta=None) -> Dict[str,float]:
+    """Wrapper for BT-SGD from counts to match existing interface"""
+    # Use DirtyGraph's adaptive learning rate if eta not specified
+    if eta is None:
+        eta = len(players) / len(matches)
+    
+    # Convert matches to counts format
+    player_to_idx = {p: i for i, p in enumerate(players)}
+    n_items = len(players)
+    
+    a_counts = defaultdict(int)
+    n_counts = defaultdict(int)
+    
+    for p1, p2, won in matches:
+        i, j = player_to_idx[p1], player_to_idx[p2]
+        # Ensure i < j for consistency
+        if i > j:
+            i, j = j, i
+            won = not won
+        
+        n_counts[(i, j)] += 1
+        if won:  # i beat j
+            a_counts[(i, j)] += 1
+    
+    theta = bt_sgd_from_counts(a_counts, n_counts, n_items, epochs=epochs, eta=eta)
+    
+    # Convert back to player dict
+    return {players[i]: theta[i] for i in range(n_items)}
+
+def bt_sgd_duels_wrapper(matches: List[Tuple[str,str,bool]], players: List[str], epochs=5, eta=None) -> Dict[str,float]:
+    """Wrapper for BT-SGD over duels to match existing interface"""
+    # Use DirtyGraph's adaptive learning rate if eta not specified
+    if eta is None:
+        eta = len(players) / len(matches)
+    
+    player_to_idx = {p: i for i, p in enumerate(players)}
+    n_items = len(players)
+    
+    # Convert matches to duels format
+    duels = []
+    for p1, p2, won in matches:
+        i, j = player_to_idx[p1], player_to_idx[p2]
+        y = 1 if won else 0
+        duels.append((i, j, y))
+    
+    theta = bt_sgd_over_duels(duels, n_items, epochs=epochs, eta=eta)
+    
+    # Convert back to player dict
+    return {players[i]: theta[i] for i in range(n_items)}
 
 # ----------------- Batch BT (gold) -----------------
 
@@ -703,6 +884,8 @@ def main():
     ap.add_argument("--threshold", type=float, default=1e-10, help="Convergence threshold for batch BT MLE algorithm")
     ap.add_argument("--edge-cap", type=int, default=10, help="Edge cap for DirtyGraph algorithm (default: 10)")
     ap.add_argument("--opdn-passes", type=int, default=1, help="Number of passes through the data for OPDN algorithm (default: 1)")
+    ap.add_argument("--sgd-epochs", type=int, default=5, help="Number of epochs for BT-SGD algorithms (default: 5)")
+    ap.add_argument("--sgd-eta", type=float, default=0.1, help="Learning rate for BT-SGD algorithms (default: 0.1)")
     ap.add_argument("--true-ratings", type=str, default=None, help="Path to CSV file with true player ratings for comparison (default: None, uses Batch BT)")
     ap.add_argument("--elo-comparison", action="store_true", help="Compare algorithms directly in ELO space instead of Bradley-Terry space")
     ap.add_argument("--bt-comparison", action="store_true", help="Compare algorithms directly in Bradley-Terry theta space")
@@ -884,11 +1067,13 @@ def main():
         # Include Batch BT in comparison when using true ratings
         evaluate_method("Batch BT", matches, players, a_gold, build_fn=lambda ms, ps: batch_bt_mle(ms, max_iters=args.max_iterations, threshold=args.threshold), repeats=args.repeats, seed=args.seed+5, shuffle=False)
     
-    evaluate_method("ISGD",        matches, players, a_gold, build_fn=lambda ms, ps: onepass_isgd(ms, ps, eta=0.1, newton_steps=2, l2=1e-3), repeats=args.repeats, seed=args.seed, shuffle=True)
+    evaluate_method("ISGD",        matches, players, a_gold, build_fn=lambda ms, ps: onepass_isgd(ms, ps, eta=0.1, newton_steps=2, l2=1e-3), repeats=args.repeats, seed=args.seed+0, shuffle=True)
     evaluate_method("FTRL-Prox",   matches, players, a_gold, build_fn=lambda ms, ps: onepass_ftrl(ms, ps, alpha=0.1, l1=0.0, l2=1e-3), repeats=args.repeats, seed=args.seed+1, shuffle=True)
     evaluate_method("Diag-Newton", matches, players, a_gold, build_fn=lambda ms, ps: onepass_diag_newton(ms, ps, ridge=1e-2, step_cap=0.1), repeats=args.repeats, seed=args.seed+2, shuffle=True)
     evaluate_method("OPDN",        matches, players, a_gold, build_fn=lambda ms, ps: build_opdn(ms, ps, sweeps=args.opdn_passes), repeats=args.repeats, seed=args.seed+3, shuffle=True)
     evaluate_method("DirtyGraph", matches, players, a_gold, build_fn=lambda ms, ps: onepass_dirty_graph(ms, ps, learning_rate=len(ps)/len(ms), phase2_iters=1, edge_cap=args.edge_cap), repeats=args.repeats, seed=args.seed+4, shuffle=True)
+    evaluate_method("BT-SGD-Counts", matches, players, a_gold, build_fn=lambda ms, ps: bt_sgd_counts_wrapper(ms, ps, epochs=args.sgd_epochs, eta=None), repeats=args.repeats, seed=args.seed+5, shuffle=True)
+    evaluate_method("BT-SGD-Duels", matches, players, a_gold, build_fn=lambda ms, ps: bt_sgd_duels_wrapper(ms, ps, epochs=args.sgd_epochs, eta=0.005), repeats=args.repeats, seed=args.seed+6, shuffle=True)
     
     # OPDN stream version already evaluated above as "OPDN"
 
@@ -899,6 +1084,8 @@ def main():
         ("Diag-Newton", lambda: onepass_diag_newton(matches, players, ridge=1e-2, step_cap=0.1)),
         ("OPDN", lambda: build_opdn(matches, players, sweeps=args.opdn_passes)),
         ("DirtyGraph", lambda: onepass_dirty_graph(matches, players, learning_rate=len(players)/len(matches), phase2_iters=1, edge_cap=args.edge_cap)),
+        ("BT-SGD-Counts", lambda: bt_sgd_counts_wrapper(matches, players, epochs=args.sgd_epochs, eta=None)),  # Use adaptive LR
+        ("BT-SGD-Duels", lambda: bt_sgd_duels_wrapper(matches, players, epochs=args.sgd_epochs, eta=0.005)),  # Use optimal LR for duels
     ]
     
     # Run algorithms and process results

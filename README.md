@@ -1,14 +1,26 @@
 # Chess Ratings Project
 
-This project implements and compares different chess rating systems: Bradley-Terry, ELO, and Dirty Graph ratings.
+This project implements and compares different chess rating systems: Bradley-Terry, ELO, and Dirty Graph ratings, with a focus on streaming and incremental updates.
 
-## Components
+## Main Components
 
-- `generate_games.py`: Generates random chess game results between players
+### Core Algorithms
 - `bradley_terry.py`: Implements the Bradley-Terry rating algorithm with win statistics tracking
 - `elo_ratings.py`: Implements the ELO rating algorithm with sequential processing and win statistics tracking
 - `dirty_graph_ratings.py`: Implements the Dirty Graph rating algorithm with edge-based updates and win statistics tracking
-- `compare_ratings.py`: Compares different rating systems by calculating deviations and displaying win statistics
+- `bt_single_pass_with_dg.py`: Implements single-pass Bradley-Terry with Dirty Graph optimizations
+
+### Analysis Scripts
+- `dirtygraph_k_ablation.py`: Performs K-value ablation study for the Dirty Graph algorithm
+- `plot_k_ablation.py`: Generates plots for the K-ablation study
+- `bt_shuffle_analysis.py`: Analyzes the effect of game order on rating convergence
+- `shuffle_analysis_simple.py`: Simplified version of shuffle analysis
+- `run_incremental_analysis.py`: Runs incremental analysis on different dataset sizes
+- `generate_rmse_plot.py`: Generates RMSE plots for algorithm comparison
+
+### Data Generation
+- `data_tools/`: Contains scripts for generating and processing chess game data
+  - `create_incremental_subsets.py`: Creates incremental subsets of game data for analysis
 
 ## Usage
 
